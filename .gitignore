@@ -1,0 +1,62 @@
+# Visual Studio
+.vs/
+Debug/
+Release/
+x64/
+x86/
+*.vcxproj.user
+*.suo
+*.sdf
+*.opensdf
+*.db
+*.opendb
+*.tlog
+*.lastbuildstate
+*.idb
+*.pdb
+*.ilk
+*.iobj
+*.ipdb
+*.log
+*.tmp
+Win32/
+
+# Qt
+*.pro.user
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+Makefile
+Makefile.Debug
+Makefile.Release
+*.qm
+*.qmlc
+*.jsc
+
+# Build outputs
+*.exe
+*.dll
+*.lib
+*.obj
+*.o
+*.exp
+*.res
+*.pch
+*.bsc
+*.sbr
+*.aps
+
+# DLL_link - third party binaries, keep DLLs but exclude build artifacts
+DLL_link/*.ncb
+DLL_link/*.opt
+DLL_link/*.plg
+DLL_link/*.dsw
+DLL_link/*.dsp
+DLL_link/Debug/
+DLL_link/Release/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
