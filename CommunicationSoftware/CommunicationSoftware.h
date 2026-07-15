@@ -50,6 +50,7 @@ private:
     // 内部初始化与清理函数
     void initUI();
     void cleanupThreads();
+    void initThreads(); // 添加这个声明
 };
 
 #endif // COMMUNICATIONSOFTWARE_H

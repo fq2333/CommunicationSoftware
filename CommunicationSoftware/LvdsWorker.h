@@ -32,6 +32,8 @@ private:
 
     // 内部工具函数：将QImage转为板卡需要的 ViUInt32 数组格式
     bool convertImageToDdrData(const QImage& img, ViUInt32* buffer, ViInt32& length);
+    bool buildProtocolData(const QByteArray& raw16BitImage, quint32 frameCount, ViUInt32* outBuffer, ViInt32& outWordLen);
+    void sendProtocolImage(const QByteArray& raw16BitData, quint32 currentFrameCount);
 };
 
 #endif // LVDSWORKER_H

@@ -4,8 +4,24 @@
 #include <QThread>
 #include "HardwareRegisters.h"
 #include "rpc_windows_client.h"
+
+#include <QtEndian>
+#include <QDateTime>
+#include <cstring>
 // 假设图片最大不超过 32M * 4 字节
 #define MAX_DATA_LEN (32 * 1024 * 1024)
+
+
+
+// 辅助函数：计算单字节累加校验和[cite: 2]
+quint16 calculateChecksum(const quint8* data, size_t length) {
+    quint16 sum = 0;
+    for (size_t i = 0; i < length; ++i) {
+        sum += data[i]; // 进位舍弃，保留16位[cite: 2]
+    }
+    return sum;
+}
+
 
 LvdsWorker::LvdsWorker(QObject* parent)
     : QObject(parent), m_vi(VI_NULL), m_isInitialized(false)
@@ -38,54 +54,69 @@ void LvdsWorker::initializeBoard(const QString& resourceName)
 
     if (status == OPT_OK) {
         m_isInitialized = true;
-        emit logMessage(QString("LVDS板卡初始化成功，Session: %1").arg(m_vi));
+        emit logMessage(QString::fromLocal8Bit("LVDS板卡初始化成功，Session: %1").arg(m_vi));
     }
     else {
-        emit errorOccurred(QString("LVDS板卡初始化失败，错误码: %1").arg(status));
+        emit errorOccurred(QString::fromLocal8Bit("LVDS板卡初始化失败，错误码: %1").arg(status));
     }
 }
 
 void LvdsWorker::sendLocalImage(const QString& imagePath)
 {
     if (!m_isInitialized) {
-        emit errorOccurred("板卡未初始化，无法发送图片");
+        emit errorOccurred(QString::fromLocal8Bit("板卡未初始化，无法发送图片"));
+        // 为了便于离线组包测试，如果你还没连硬件，可以把上面的 return 暂时注释掉
+        //return;
+    }
+
+    emit logMessage(QString::fromLocal8Bit("正在加载本地 PNG 图像: %1").arg(imagePath));
+    QImage img;
+    if (!img.load(imagePath)) {
+        emit errorOccurred(QString::fromLocal8Bit("加载本地图片失败，请检查路径或格式！"));
         return;
     }
 
-    QImage img(imagePath);
-    if (img.isNull()) {
-        emit errorOccurred("加载本地图片失败: " + imagePath);
+    // 1. 尺寸校验 (协议要求 4096 x 4096)
+    if (img.width() != 4096 || img.height() != 4096) {
+        emit errorOccurred(QString::fromLocal8Bit("图像尺寸不匹配! 协议要求 4096x4096, 当前图像为 %1x%2")
+            .arg(img.width()).arg(img.height()));
+        // 如果想强行用小图测试，可启用下面这句缩放（注意缩放可能导致图像失真）
+        // img = img.scaled(4096, 4096, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
         return;
     }
 
-    // 分配堆内存，避免栈溢出
-    ViUInt32* wr_data = new ViUInt32[MAX_DATA_LEN];
-    ViInt32 wr_len = 0;
-
-    // 1. 转换图像数据为DDR格式
-    if (!convertImageToDdrData(img, wr_data, wr_len)) {
-        emit errorOccurred("图像数据格式转换失败");
-        delete[] wr_data;
+    // 2. 转换为 16位 格式
+    // Qt 5.13 以后支持 Format_Grayscale16，每个像素占 2 字节（即 uint16）
+    QImage img16 = img.convertToFormat(QImage::Format_Grayscale16);
+    if (img16.isNull()) {
+        emit errorOccurred(QString::fromLocal8Bit("图像转换为 16-bit 格式失败，请检查 Qt 版本。"));
         return;
     }
 
-    // 2. 写入DDR
-    emit logMessage(QString("正在将 %1 字节的图像数据写入DDR...").arg(wr_len * 4));
-    //ViStatus status = HITMC_RAM_SEND(m_vi, 0x20000000, wr_data, wr_len);
-    ViStatus status = HITMC_RAM_SEND(m_vi, HardwareReg::DDR_BASE_ADDR, wr_data, wr_len);
-    if (status == OPT_OK) {
-        emit operationCompleted("图像数据成功写入DDR并发送");
+    // 3. 提取原始 Raw 像素数据
+    // 虽然 4096 * 2 = 8192 字节正好是 4 的倍数，不存在行尾填充(padding)，
+    // 但为了代码绝对的安全健壮，推荐使用 constScanLine 逐行拷贝。
+    QByteArray raw16BitData;
+    int width = img16.width();
+    int height = img16.height();
+    int bytesPerPixel = 2; // uint16 占两字节
 
-        // 可选：在此处调用 HITMC_SET_MODULE_para 配置寄存器触发硬件发送逻辑
-        // HITMC_SET_MODULE_para(m_vi, TRIGGER_REG_ADDR, 0x01);
-        // 寄存器写操作，语义清晰
-        //status = HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_SELF_TEST, HardwareReg::VAL_SELF_TEST_BASE + temp_i);
-    }
-    else {
-        emit errorOccurred(QString("写入DDR失败，错误码: %1").arg(status));
+    raw16BitData.reserve(width * height * bytesPerPixel); // 预分配 32MB 内存，提升效率
+
+    for (int y = 0; y < height; ++y) {
+        const char* linePtr = reinterpret_cast<const char*>(img16.constScanLine(y));
+        raw16BitData.append(linePtr, width * bytesPerPixel);
     }
 
-    delete[] wr_data;
+    emit logMessage(QString::fromLocal8Bit("成功提取 16bit 原始像素数据，准备组包..."));
+
+    // 4. 生成帧计数 (静态变量，每次发送自动+1)
+    static quint32 frameCount = 1;
+
+    // 5. 调用上一节编写的组包发送函数
+    sendProtocolImage(raw16BitData, frameCount);
+
+    frameCount++;
 }
 
 bool LvdsWorker::convertImageToDdrData(const QImage& img, ViUInt32* buffer, ViInt32& length)
@@ -107,12 +138,148 @@ bool LvdsWorker::convertImageToDdrData(const QImage& img, ViUInt32* buffer, ViIn
     return true;
 }
 
+// 假设输入 raw16BitImage 是按本地端存储的 4096*4096*16bit (33554432 字节) 图像像素数据
+bool LvdsWorker::buildProtocolData(const QByteArray& raw16BitImage, quint32 frameCount, ViUInt32* outBuffer, ViInt32& outWordLen)
+{
+    const int IMAGE_WIDTH = 4096;
+    const int IMAGE_HEIGHT = 4096;
+    const int ROW_BYTE_SIZE = 8196; // 4098列 * 2字节[cite: 2]
+
+    // 总字节数 = 4097行 * 8196字节 = 33,579,012 字节
+    const int TOTAL_BYTES = 4097 * ROW_BYTE_SIZE;
+
+    if (raw16BitImage.size() < IMAGE_WIDTH * IMAGE_HEIGHT * 2) {
+        emit errorOccurred(QString::fromLocal8Bit("原始图像数据大小不足!"));
+        return false;
+    }
+
+    // 将输出缓存强转为字节指针，方便按协议字节逐个拼接
+    quint8* pDest = reinterpret_cast<quint8*>(outBuffer);
+    memset(pDest, 0, TOTAL_BYTES);
+
+    // ==========================================
+    // 第一步：构建第1行 (辅助数据)[cite: 2]
+    // ==========================================
+    quint8* auxRow = pDest; // 第1行首地址
+    int offset = 0;
+
+    // 1. 帧标识 8B: 0x4954926444160001[cite: 2]
+    quint64 frameSync = 0x4954926444160001;
+    qToBigEndian(frameSync, auxRow + offset);
+    offset += 8;
+
+    // 2. 曝光开始时间码 8B (高4字节秒，低4字节微秒)[cite: 2]
+    // 此处以当前系统时间为例，实际需根据您的硬件状态读取
+    qint64 currentMSecs = QDateTime::currentMSecsSinceEpoch();
+    quint32 startSecs = currentMSecs / 1000;
+    quint32 startUSecs = (currentMSecs % 1000) * 1000;
+    qToBigEndian(startSecs, auxRow + offset);     offset += 4;
+    qToBigEndian(startUSecs, auxRow + offset);    offset += 4;
+
+    // 3. 曝光结束时间码 8B[cite: 2]
+    // 假设曝光时间10ms
+    quint32 endSecs = startSecs;
+    quint32 endUSecs = startUSecs + 10000;
+    qToBigEndian(endSecs, auxRow + offset);       offset += 4;
+    qToBigEndian(endUSecs, auxRow + offset);      offset += 4;
+
+    // 4. 帧计数 4B[cite: 2]
+    qToBigEndian(frameCount, auxRow + offset);
+    offset += 4;
+
+    // 5. 预留字段 8166B[cite: 2]
+    // (初始化时已memset为0，直接跳过)
+    offset += 8166;
+
+    // 6. 辅助数据累加校验和 2B[cite: 2]
+    quint16 auxChecksum = calculateChecksum(auxRow, 8194);
+    qToBigEndian(auxChecksum, auxRow + 8194);
+
+    // ==========================================
+    // 第二步：构建第2~4097行 (有效图像数据)[cite: 2]
+    // ==========================================
+    const quint8* pRawPixels = reinterpret_cast<const quint8*>(raw16BitImage.constData());
+
+    for (int row = 0; row < IMAGE_HEIGHT; ++row) {
+        quint8* currentRowPtr = pDest + (row + 1) * ROW_BYTE_SIZE; // 跳过第1行
+
+        // 1. 行标识 2B: 0x4994[cite: 2]
+        quint16 rowSync = 0x4994;
+        qToBigEndian(rowSync, currentRowPtr);
+
+        // 2. 图像数据 8192B (需要保证是大端格式)[cite: 2]
+        // 假设您的 raw16BitImage 来源于 x86 内存（小端），需要转大端
+        const quint16* srcPixel = reinterpret_cast<const quint16*>(pRawPixels + row * 8192);
+        quint16* destPixel = reinterpret_cast<quint16*>(currentRowPtr + 2);
+        for (int p = 0; p < 4096; ++p) {
+            qToBigEndian(srcPixel[p], destPixel + p);
+        }
+
+        // 3. 行累加校验和 2B[cite: 2]
+        quint16 rowChecksum = calculateChecksum(currentRowPtr, 8194);
+        qToBigEndian(rowChecksum, currentRowPtr + 8194);
+    }
+
+    // ==========================================
+    // 第三步：计算写DDR所需的 32bit 字长度
+    // ==========================================
+    // 总计 33,579,012 字节，正好能被 4 整除 (等于 8,394,753 Words)
+    outWordLen = TOTAL_BYTES / 4;
+
+    return true;
+}
+void LvdsWorker::sendProtocolImage(const QByteArray& raw16BitData, quint32 currentFrameCount)
+{
+    // ... 检查板卡是否初始化 ...
+    if (!m_isInitialized) {
+        emit errorOccurred(QString::fromLocal8Bit("板卡未初始化，无法发送图片"));
+        return;
+    }
+
+    
+    if (raw16BitData.isNull()) {
+        emit errorOccurred(QString::fromLocal8Bit("加载图片失败 "));
+        return;
+    }
+    // MAX_DATA_LEN 为之前定义的 32*1024*1024 words
+    ViUInt32* wr_data = new ViUInt32[32 * 1024 * 1024];
+    ViInt32 wr_len = 0;
+
+    emit logMessage(QString::fromLocal8Bit("正在进行协议数据组包与大端转换..."));
+
+    if (buildProtocolData(raw16BitData, currentFrameCount, wr_data, wr_len)) {
+        emit logMessage(QString::fromLocal8Bit("组包完成，准备下发至DDR，长度: %1 Words").arg(wr_len));
+
+
+        // 离线测试代码 (存入本地文件以便用十六进制软件查验包头和校验和)
+        FILE* fp = fopen("test_packet.bin", "wb");
+        if (fp) {
+            fwrite(wr_data, 4, wr_len, fp);
+            fclose(fp);
+            emit logMessage(QString::fromLocal8Bit("已生成组包文件test_packet.bin，请使用 Hex 工具查看验证！"));
+        }
+
+        // 写入DDR
+        ViStatus status = HITMC_RAM_SEND(m_vi, 0x20000000, wr_data, wr_len);
+
+        if (status == 0) { // 假设 OPT_OK == 0
+            emit operationCompleted(QString::fromLocal8Bit("第 %1 帧图像已写入DDR").arg(currentFrameCount));
+            // 可以在此处写入特定寄存器触发 FPGA 开始读取 DDR 并产生 100MHz LVDS 时序
+        }
+        else {
+            emit errorOccurred(QString::fromLocal8Bit("DDR写入失败，错误码：%1").arg(status));
+        }
+    }
+
+    delete[] wr_data;
+}
+
 void LvdsWorker::closeBoard()
 {
     if (m_isInitialized && m_vi != VI_NULL) {
         ViStatus status = HITMC_MODULE_close(m_vi);
         m_isInitialized = false;
         m_vi = VI_NULL;
-        emit logMessage(QString("LVDS板卡已关闭，状态码: %1").arg(status));
+        emit logMessage(QString::fromLocal8Bit("LVDS板卡已关闭，状态码: %1").arg(status));
     }
 }
