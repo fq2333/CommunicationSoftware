@@ -38,6 +38,15 @@ namespace HardwareReg {
     // REG_SELF_TEST 寄存器测试写入的基准值[cite: 1]
     constexpr uint32_t VAL_SELF_TEST_BASE = 0x146F;
 
+    // ==========================================
+    // 5. LVDS 发送控制寄存器
+    // ==========================================
+    constexpr uint32_t REG_RESET = 0x04; // 复位寄存器
+    constexpr uint32_t REG_START_TX_1 = 0x1C; // 启动发送控制1
+    constexpr uint32_t REG_START_TX_2 = 0x2C; // 启动发送控制2 (兼作停止DDR)
+    constexpr uint32_t REG_TX_STATUS = 0x34; // 发送状态监测寄存器
+
+
 } // namespace HardwareReg
 
 #endif // HARDWAREREGISTERS_H

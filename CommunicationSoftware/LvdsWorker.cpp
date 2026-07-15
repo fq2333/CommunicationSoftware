@@ -53,8 +53,44 @@ void LvdsWorker::initializeBoard(const QString& resourceName)
     }
 
     if (status == OPT_OK) {
-        m_isInitialized = true;
-        emit logMessage(QString::fromLocal8Bit("LVDS板卡初始化成功，Session: %1").arg(m_vi));
+        emit logMessage(QString::fromLocal8Bit("底层句柄打开成功，正在执行寄存器自检..."));
+
+        ViUInt32 get_Data = 0;
+        bool selfTestPassed = true;
+
+        // 进行 10 次循环读写测试
+        for (ViUInt32 temp_i = 0; temp_i < 10; temp_i++) {
+            ViUInt32 writeVal = 0x146f + temp_i;
+
+            // 寄存器写操作
+            ViStatus writeStatus = HITMC_SET_MODULE_para(m_vi, 0x00, writeVal);
+            // 寄存器读操作
+            ViStatus readStatus = HITMC_GET_MODULE_para(m_vi, 0x00, &get_Data);
+
+            // 检查 API 调用状态以及数据一致性
+            if (writeStatus != 0 || readStatus != 0 || get_Data != writeVal) {
+                selfTestPassed = false;
+
+                // 使用 arg(..., 0, 16) 将数值格式化为十六进制显示，方便调试
+                emit errorOccurred(QString::fromLocal8Bit("自检失败！轮次: %1, 写入: 0x%2, 读出: 0x%3")
+                    .arg(temp_i)
+                    .arg(writeVal, 0, 16)   
+                    .arg(get_Data, 0, 16));
+                break; // 只要有一次失败，立即退出测试
+            }
+        }
+
+        if (selfTestPassed) {
+            m_isInitialized = true;
+            emit logMessage(QString::fromLocal8Bit("LVDS板卡初始化且自检通过！Session: %1").arg(m_vi));
+        }
+        else {
+            // 自检失败说明硬件链路存在异常，为安全起见关闭句柄
+            HITMC_MODULE_close(m_vi);
+            m_vi = VI_NULL;
+            m_isInitialized = false;
+            emit errorOccurred(QString::fromLocal8Bit("LVDS板卡自检未通过，已断开连接。"));
+        }
     }
     else {
         emit errorOccurred(QString::fromLocal8Bit("LVDS板卡初始化失败，错误码: %1").arg(status));
@@ -259,16 +295,78 @@ void LvdsWorker::sendProtocolImage(const QByteArray& raw16BitData, quint32 curre
             emit logMessage(QString::fromLocal8Bit("已生成组包文件test_packet.bin，请使用 Hex 工具查看验证！"));
         }
 
-        // 写入DDR
-        ViStatus status = HITMC_RAM_SEND(m_vi, 0x20000000, wr_data, wr_len);
 
-        if (status == 0) { // 假设 OPT_OK == 0
-            emit operationCompleted(QString::fromLocal8Bit("第 %1 帧图像已写入DDR").arg(currentFrameCount));
-            // 可以在此处写入特定寄存器触发 FPGA 开始读取 DDR 并产生 100MHz LVDS 时序
+        // ==========================================
+        // 3) 发送前复位操作
+        // ==========================================
+        emit logMessage(QString::fromLocal8Bit("执行发送前复位操作..."));
+        HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_RESET, 0x0);
+        HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_RESET, 0x1);
+
+
+        //// 写入DDR
+        //ViStatus status = HITMC_RAM_SEND(m_vi, 0x20000000, wr_data, wr_len);
+
+        // ==========================================
+        // 4) 向DDR中加载发送文件
+        // ==========================================
+        emit logMessage(QString::fromLocal8Bit("正在向DDR写入数据，长度: %1 Words").arg(wr_len));
+        ViStatus status = HITMC_RAM_SEND(m_vi, HardwareReg::DDR_BASE_ADDR, wr_data, wr_len);
+
+        if (status == 0) {
+
+            // ==========================================
+            // 5) 启动发送
+            // ==========================================
+            emit logMessage(QString::fromLocal8Bit("DDR写入成功，启动FPGA发送..."));
+            HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_START_TX_2, 0x1);
+            HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_START_TX_1, 0x1);
+
+            // ==========================================
+            // 6) 监测发送是否完成 (带超时保护机制)
+            // ==========================================
+            emit logMessage(QString::fromLocal8Bit("正在监测发送状态，等待完成..."));
+            ViUInt32 get_Data = 0;
+            bool isFinished = false;
+            int timeoutCount = 0;
+            const int MAX_TIMEOUT_MS = 10000; // 设定10秒超时（根据实际波特率和图幅调整）
+            const int SLEEP_INTERVAL_MS = 10; // 每次轮询间隔10毫秒
+
+            while (!isFinished && (timeoutCount * SLEEP_INTERVAL_MS) < MAX_TIMEOUT_MS) {
+                HITMC_GET_MODULE_para(m_vi, HardwareReg::REG_TX_STATUS, &get_Data);
+
+                // 读出数据的bit0位为1则表示发送结束
+                if ((get_Data & 0x01) == 0x01) {
+                    isFinished = true;
+                }
+                else {
+                    QThread::msleep(SLEEP_INTERVAL_MS); // 休眠以释放CPU资源，不会阻塞UI
+                    timeoutCount++;
+                }
+            }
+
+            if (isFinished) {
+                emit operationCompleted(QString::fromLocal8Bit("第 %1 帧图像发送结束！耗时约 %2 ms")
+                    .arg(currentFrameCount)
+                    .arg(timeoutCount * SLEEP_INTERVAL_MS));
+            }
+            else {
+                emit errorOccurred(QString::fromLocal8Bit("发送超时！未检测到FPGA发送完成标志。"));
+            }
+
+            // ==========================================
+            // 7) 发送完成后进行停止DDR操作和复位
+            // ==========================================
+            emit logMessage(QString::fromLocal8Bit("执行停止DDR及复位操作..."));
+            HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_START_TX_2, 0x0);
+            HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_RESET, 0x0);
+
         }
         else {
             emit errorOccurred(QString::fromLocal8Bit("DDR写入失败，错误码：%1").arg(status));
         }
+
+
     }
 
     delete[] wr_data;

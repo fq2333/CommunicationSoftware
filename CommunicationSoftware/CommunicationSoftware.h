@@ -4,6 +4,7 @@
 #include <QtWidgets/QMainWindow>
 #include "ui_CommunicationSoftware.h" // 根据你的实际UI头文件名称可能需要调整，例如 #include "ui_communicationsoftware.h"
 #include <QThread>
+#include <QCloseEvent>
 
 // 前向声明 Qt 控件，减少头文件依赖
 class LvdsWorker;
@@ -25,6 +26,9 @@ signals:
     void sigInitLvds(const QString &resourceName);
     void sigSendImage(const QString &imagePath);
     void sigCloseBoard();
+protected:
+    // [新增] 拦截窗口关闭事件
+    void closeEvent(QCloseEvent* event) override;
 
 private slots:
     // 用于接收底层 Worker 线程反馈的槽函数，用于更新UI

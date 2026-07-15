@@ -86,6 +86,9 @@ void CommunicationSoftware::initUI()
     // 使用成员变量实例化
     m_leResource = new QLineEdit("10.109.3.100::PXI29::12::INSTR", lvdsPage);
     QPushButton* btnInitLvds = new QPushButton(QString::fromLocal8Bit("初始化LVDS板卡"), lvdsPage);
+    // [新增] 实例化断开连接按钮
+    QPushButton* btnDisconnect = new QPushButton(QString::fromLocal8Bit("断开连接"), lvdsPage);
+
 
     m_leImagePath = new QLineEdit("C:/test_image.bmp", lvdsPage);
     QPushButton* btnSelectImage = new QPushButton(QString::fromLocal8Bit("选择本地图像..."), lvdsPage);
@@ -94,6 +97,8 @@ void CommunicationSoftware::initUI()
     lvdsLayout->addWidget(new QLabel(QString::fromLocal8Bit("设备资源名:")));
     lvdsLayout->addWidget(m_leResource);
     lvdsLayout->addWidget(btnInitLvds);
+    lvdsLayout->addWidget(btnDisconnect); // [新增] 将按钮加入布局
+
     lvdsLayout->addWidget(new QLabel(QString::fromLocal8Bit("图像文件路径:")));
     lvdsLayout->addWidget(m_leImagePath);
     lvdsLayout->addWidget(btnSelectImage);
@@ -152,6 +157,18 @@ void CommunicationSoftware::initUI()
         emit sigSendImage(m_leImagePath->text()); // 直接读取成员变量
         m_logBrowser->append(QString::fromLocal8Bit("[%1] 准备加载图片并发送...").arg(QTime::currentTime().toString("HH:mm:ss")));
         });
+
+    // [新增] 断开连接按钮绑定
+    connect(btnDisconnect, &QPushButton::clicked, this, [=]() {
+        emit sigCloseBoard();
+        m_logBrowser->append(QString("[%1] 发送断开连接指令...").arg(QTime::currentTime().toString("HH:mm:ss")));
+        });
+
+    // 发送图片按钮
+    connect(btnSendImage, &QPushButton::clicked, this, [=]() {
+        emit sigSendImage(m_leImagePath->text());
+        m_logBrowser->append(QString("[%1] 准备加载图片并发送...").arg(QTime::currentTime().toString("HH:mm:ss")));
+        });
     // [新增] 绑定选择本地图像按钮
     connect(btnSelectImage, &QPushButton::clicked, this, [=]() {
         // 弹出文件选择对话框
@@ -200,15 +217,56 @@ void CommunicationSoftware::onWorkerFinished(const QString& result)
         m_logBrowser->append(QString("[%1] %2").arg(timeStr).arg(result));
     }
 }
+//
+//void CommunicationSoftware::cleanupThreads()
+//{
+//    if (mLvdsThread && mLvdsThread->isRunning()) {
+//        // 通知板卡关闭
+//        emit sigCloseBoard();
+//
+//        // 请求线程退出并等待它完成当前任务
+//        mLvdsThread->quit();
+//        mLvdsThread->wait(); // 阻塞主线程等待子线程安全结束，防止悬空指针
+//    }
+//}
 
+// [新增] 窗口关闭事件拦截
+void CommunicationSoftware::closeEvent(QCloseEvent* event)
+{
+    if (m_logBrowser) {
+        m_logBrowser->append(QString("[%1] 正在关闭软件，清理后台线程资源...").arg(QTime::currentTime().toString("HH:mm:ss")));
+    }
+
+    // 调用统一的清理函数
+    cleanupThreads();
+
+    // 接受关闭事件，允许窗口销毁
+    event->accept();
+}
+
+// [新增] 统一的线程清理函数
 void CommunicationSoftware::cleanupThreads()
 {
-    if (mLvdsThread && mLvdsThread->isRunning()) {
-        // 通知板卡关闭
-        emit sigCloseBoard();
+    if (mLvdsThread) {
+        // 1. 如果线程正在运行，先通知底层Worker执行关闭板卡操作
+        if (mLvdsThread->isRunning()) {
+            emit sigCloseBoard();
 
-        // 请求线程退出并等待它完成当前任务
-        mLvdsThread->quit();
-        mLvdsThread->wait(); // 阻塞主线程等待子线程安全结束，防止悬空指针
+            // 2. 告诉线程准备退出事件循环
+            mLvdsThread->quit();
+
+            // 3. 阻塞主线程，等待子线程彻底结束（防止资源泄漏或野指针崩溃）
+            // 设置 3000ms 超时，防止由于硬件卡死导致软件无法关闭
+            if (!mLvdsThread->wait(3000)) {
+                mLvdsThread->terminate(); // 极端情况下的强制终止
+                mLvdsThread->wait();
+            }
+        }
+
+        // 4. 清理线程对象内存
+        delete mLvdsThread;
+        mLvdsThread = nullptr;
+        // 注意：mLvdsWorker 会由于 QThread::finished 信号绑定了 deleteLater 而自动释放，无需手动 delete
+        mLvdsWorker = nullptr;
     }
 }
