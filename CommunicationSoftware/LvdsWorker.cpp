@@ -297,10 +297,12 @@ void LvdsWorker::sendProtocolImage(const QByteArray& raw16BitData, quint32 curre
 
 
         // ==========================================
-        // 3) 发送前复位操作
+        // 3) 发送前复位操作 (已根据最新说明更新)
         // ==========================================
-        emit logMessage(QString::fromLocal8Bit("执行发送前复位操作..."));
+        emit logMessage(QString::fromLocal8Bit("3) 执行发送前复位操作..."));
         HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_RESET, 0x0);
+        HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_START_TX_2, 0x0); // 新增：清零2C
+        HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_START_TX_1, 0x0); // 新增：清零1C
         HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_RESET, 0x1);
 
 
@@ -316,11 +318,12 @@ void LvdsWorker::sendProtocolImage(const QByteArray& raw16BitData, quint32 curre
         if (status == 0) {
 
             // ==========================================
-            // 5) 启动发送
+            // 5) 启动发送 (已根据最新说明更新：构造脉冲触发)
             // ==========================================
-            emit logMessage(QString::fromLocal8Bit("DDR写入成功，启动FPGA发送..."));
+            emit logMessage(QString::fromLocal8Bit("5) DDR写入成功，启动FPGA发送..."));
             HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_START_TX_2, 0x1);
             HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_START_TX_1, 0x1);
+            HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_START_TX_1, 0x0); // 新增：写入0形成下降沿脉冲
 
             // ==========================================
             // 6) 监测发送是否完成 (带超时保护机制)
