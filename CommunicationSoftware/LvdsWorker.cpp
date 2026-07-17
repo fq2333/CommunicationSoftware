@@ -2,6 +2,8 @@
 #include <QDebug>
 #include <QFileInfo>
 #include <QThread>
+#include <QFile>
+#include <QDataStream>
 #include "HardwareRegisters.h"
 #include "rpc_windows_client.h"
 
@@ -374,13 +376,94 @@ void LvdsWorker::sendProtocolImage(const QByteArray& raw16BitData, quint32 curre
 
     delete[] wr_data;
 }
+void LvdsWorker::readSelfTestData(const QString& saveFilePath)
+{
+    if (!m_isInitialized) {
+        emit errorOccurred(QString::fromLocal8Bit("板卡未初始化，无法读取自检数据。"));
+        return;
+    }
+
+    ViUInt32 get_Data = 0;
+
+    // 1. 读取接收状态
+    HITMC_GET_MODULE_para(m_vi, HardwareReg::REG_RX_LINES, &get_Data);
+    emit logMessage(QString::fromLocal8Bit("接收数据行数: %1 行").arg(get_Data));
+
+    HITMC_GET_MODULE_para(m_vi, HardwareReg::REG_RX_BITS, &get_Data);
+    emit logMessage(QString::fromLocal8Bit("接收到的总bit数量: %1 bits").arg(get_Data));
+
+    // 准备写文件
+    QFile file(saveFilePath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        emit errorOccurred(QString::fromLocal8Bit("无法创建或打开保存文件: ") + saveFilePath);
+        return;
+    }
+
+    // 2. 读取DDR中的数据
+    HITMC_GET_MODULE_para(m_vi, HardwareReg::REG_RX_DDR_WPTR, &get_Data);
+    ViInt32 rd_len = (get_Data - HardwareReg::RX_DDR_BASE_ADDR) / 4;
+
+    if (rd_len > 0) {
+        emit logMessage(QString::fromLocal8Bit("正在从DDR中读取 %1 Words 的接收数据...").arg(rd_len));
+        ViInt32* rd_data = new ViInt32[rd_len];
+
+        ViStatus status = HITMC_RAM_REV(m_vi, HardwareReg::RX_DDR_BASE_ADDR, rd_data, &rd_len);
+        if (status == 0) { // 假设0为成功
+            file.write(reinterpret_cast<const char*>(rd_data), rd_len * 4);
+        }
+        else {
+            emit errorOccurred(QString::fromLocal8Bit("读取接收DDR数据失败，错误码：%1").arg(status));
+        }
+        delete[] rd_data;
+    }
+    else {
+        emit logMessage(QString::fromLocal8Bit("DDR中没有可读取的自检接收数据。"));
+    }
+
+    // 3. 读取未写入DDR的剩余数据
+    HITMC_GET_MODULE_para(m_vi, HardwareReg::REG_RX_REMAIN_LEN, &get_Data);
+    ViInt32 remain_len = get_Data;
+
+    if (remain_len > 0) {
+        emit logMessage(QString::fromLocal8Bit("正在从FIFO中读取剩余未入DDR的数据: %1 Words").arg(remain_len));
+        for (int i = 0; i < remain_len; i++) {
+            ViUInt32 remainData = 0;
+            HITMC_GET_MODULE_para(m_vi, HardwareReg::REG_RX_REMAIN_DATA, &remainData);
+            file.write(reinterpret_cast<const char*>(&remainData), 4);
+        }
+    }
+
+    file.close();
+    emit operationCompleted(QString::fromLocal8Bit("自检接收数据已全部保存至: ") + saveFilePath);
+}
+void LvdsWorker::resetBoard()
+{
+    if (!m_isInitialized) {
+        emit errorOccurred(QString::fromLocal8Bit("板卡未初始化，无法执行复位。"));
+        return;
+    }
+
+    emit logMessage(QString::fromLocal8Bit("执行独立复位操作..."));
+    HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_RESET, 0x0);
+    HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_START_TX_2, 0x0);
+    HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_START_TX_1, 0x0);
+    HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_RESET, 0x1);
+
+    emit operationCompleted(QString::fromLocal8Bit("板卡复位完成！"));
+}
 
 void LvdsWorker::closeBoard()
 {
     if (m_isInitialized && m_vi != VI_NULL) {
+        emit logMessage(QString::fromLocal8Bit("正在执行关卡前寄存器清理..."));
+
+        // 步骤6 新增：写0清理状态
+        HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_START_TX_2, 0x0);
+        HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_RESET, 0x0);
+
         ViStatus status = HITMC_MODULE_close(m_vi);
         m_isInitialized = false;
         m_vi = VI_NULL;
-        emit logMessage(QString::fromLocal8Bit("LVDS板卡已关闭，状态码: %1").arg(status));
+        emit logMessage(QString::fromLocal8Bit("LVDS板卡已安全关闭，状态码: %1").arg(status));
     }
 }

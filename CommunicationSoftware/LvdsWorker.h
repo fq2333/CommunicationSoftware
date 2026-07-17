@@ -25,6 +25,8 @@ public slots:
     void initializeBoard(const QString& resourceName);
     void closeBoard();
     void sendLocalImage(const QString& imagePath);
+    void resetBoard();                                   // 步骤3：独立复位
+    void readSelfTestData(const QString& saveFilePath);  // 步骤5：读取自检数据
 
 private:
     ViSession m_vi;

@@ -26,6 +26,8 @@ signals:
     void sigInitLvds(const QString &resourceName);
     void sigSendImage(const QString &imagePath);
     void sigCloseBoard();
+    void sigResetBoard();
+    void sigReadSelfTestData(const QString& saveFilePath);
 protected:
     // [新增] 拦截窗口关闭事件
     void closeEvent(QCloseEvent* event) override;
@@ -55,6 +57,7 @@ private:
     void initUI();
     void cleanupThreads();
     void initThreads(); // 添加这个声明
+    
 };
 
 #endif // COMMUNICATIONSOFTWARE_H

@@ -45,7 +45,15 @@ namespace HardwareReg {
     constexpr uint32_t REG_START_TX_1 = 0x1C; // 启动发送控制1
     constexpr uint32_t REG_START_TX_2 = 0x2C; // 启动发送控制2 (兼作停止DDR)
     constexpr uint32_t REG_TX_STATUS = 0x34; // 发送状态监测寄存器
-
+    // ==========================================
+    // 6. LVDS 自检接收监测寄存器 (新增)
+    // ==========================================
+    constexpr uint32_t REG_RX_LINES = 0x20; // 接收数据行数
+    constexpr uint32_t REG_RX_BITS = 0x24; // 接收总bit数
+    constexpr uint32_t REG_RX_DDR_WPTR = 0x08; // 自检接收数据写入DDR的写指针
+    constexpr uint32_t REG_RX_REMAIN_LEN = 0x10; // 未写入DDR的接收数据量
+    constexpr uint32_t REG_RX_REMAIN_DATA = 0x14; // 未写入DDR的数据读取口
+    constexpr uint32_t RX_DDR_BASE_ADDR = 0x28000000; // 接收端DDR基地址
 
 } // namespace HardwareReg
 

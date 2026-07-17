@@ -53,7 +53,8 @@ void CommunicationSoftware::initThreads()
     connect(this, &CommunicationSoftware::sigInitLvds, mLvdsWorker, &LvdsWorker::initializeBoard);
     connect(this, &CommunicationSoftware::sigSendImage, mLvdsWorker, &LvdsWorker::sendLocalImage);
     connect(this, &CommunicationSoftware::sigCloseBoard, mLvdsWorker, &LvdsWorker::closeBoard);
-
+    connect(this, &CommunicationSoftware::sigResetBoard, mLvdsWorker, &LvdsWorker::resetBoard);
+    connect(this, &CommunicationSoftware::sigReadSelfTestData, mLvdsWorker, &LvdsWorker::readSelfTestData);
     // ========================================================
     // 关键点2：将 Worker 的状态反馈信号，绑定到 UI 界面的槽函数！
     // 只有写了这三行，底层 emits 的信息才能跑到 m_logBrowser 里显示
@@ -103,8 +104,21 @@ void CommunicationSoftware::initUI()
     lvdsLayout->addWidget(m_leImagePath);
     lvdsLayout->addWidget(btnSelectImage);
     lvdsLayout->addWidget(btnSendImage);
-    lvdsLayout->addStretch();
+    
 
+
+    // 新增独立复位按钮
+    QPushButton* btnResetBoard = new QPushButton(QString::fromLocal8Bit("复位板卡"), lvdsPage);
+    lvdsLayout->insertWidget(3, btnResetBoard); // 插入到初始化按钮下方
+
+    // 新增自检数据保存路径及按钮
+    QLineEdit* leSavePath = new QLineEdit(QString::fromLocal8Bit("C:/rx_selftest_data.bin"), lvdsPage);
+    QPushButton* btnReadData = new QPushButton(QString::fromLocal8Bit("读取自检接收数据"), lvdsPage);
+    lvdsLayout->addWidget(new QLabel(QString::fromLocal8Bit("接收数据保存路径:")));
+    lvdsLayout->addWidget(leSavePath);
+    lvdsLayout->addWidget(btnReadData);
+
+    lvdsLayout->addStretch();
     configToolBox->addItem(lvdsPage, QString::fromLocal8Bit("1. LVDS接口配置"));
 
     // (... 省略 UDP/RS422 页面的添加逻辑，与之前一致 ...)
@@ -161,13 +175,13 @@ void CommunicationSoftware::initUI()
     // [新增] 断开连接按钮绑定
     connect(btnDisconnect, &QPushButton::clicked, this, [=]() {
         emit sigCloseBoard();
-        m_logBrowser->append(QString("[%1] 发送断开连接指令...").arg(QTime::currentTime().toString("HH:mm:ss")));
+        m_logBrowser->append(QString::fromLocal8Bit("[%1] 发送断开连接指令...").arg(QTime::currentTime().toString("HH:mm:ss")));
         });
 
     // 发送图片按钮
     connect(btnSendImage, &QPushButton::clicked, this, [=]() {
         emit sigSendImage(m_leImagePath->text());
-        m_logBrowser->append(QString("[%1] 准备加载图片并发送...").arg(QTime::currentTime().toString("HH:mm:ss")));
+        m_logBrowser->append(QString::fromLocal8Bit("[%1] 准备加载图片并发送...").arg(QTime::currentTime().toString("HH:mm:ss")));
         });
     // [新增] 绑定选择本地图像按钮
     connect(btnSelectImage, &QPushButton::clicked, this, [=]() {
@@ -191,6 +205,19 @@ void CommunicationSoftware::initUI()
             }
         }
         });
+
+    // 绑定复位按钮
+    connect(btnResetBoard, &QPushButton::clicked, this, [=]() {
+        emit sigResetBoard();
+        m_logBrowser->append(QString::fromLocal8Bit("[%1] 发送独立复位指令...").arg(QTime::currentTime().toString("HH:mm:ss")));
+        });
+
+    // 绑定读取自检数据按钮
+    connect(btnReadData, &QPushButton::clicked, this, [=]() {
+        emit sigReadSelfTestData(leSavePath->text());
+        m_logBrowser->append(QString::fromLocal8Bit("[%1] 请求读取自检接收数据...").arg(QTime::currentTime().toString("HH:mm:ss")));
+        });
+
 }
 
 // ==========================================
