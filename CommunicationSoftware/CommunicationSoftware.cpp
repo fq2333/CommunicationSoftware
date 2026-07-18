@@ -112,7 +112,7 @@ void CommunicationSoftware::initUI()
     lvdsLayout->insertWidget(3, btnResetBoard); // 插入到初始化按钮下方
 
     // 新增自检数据保存路径及按钮
-    QLineEdit* leSavePath = new QLineEdit(QString::fromLocal8Bit("C:/rx_selftest_data.bin"), lvdsPage);
+    QLineEdit* leSavePath = new QLineEdit(QString::fromLocal8Bit("rx_selftest_data.bin"), lvdsPage);
     QPushButton* btnReadData = new QPushButton(QString::fromLocal8Bit("读取自检接收数据"), lvdsPage);
     lvdsLayout->addWidget(new QLabel(QString::fromLocal8Bit("接收数据保存路径:")));
     lvdsLayout->addWidget(leSavePath);

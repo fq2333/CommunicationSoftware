@@ -359,12 +359,12 @@ void LvdsWorker::sendProtocolImage(const QByteArray& raw16BitData, quint32 curre
                 emit errorOccurred(QString::fromLocal8Bit("发送超时！未检测到FPGA发送完成标志。"));
             }
 
-            // ==========================================
-            // 7) 发送完成后进行停止DDR操作和复位
-            // ==========================================
-            emit logMessage(QString::fromLocal8Bit("执行停止DDR及复位操作..."));
-            HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_START_TX_2, 0x0);
-            HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_RESET, 0x0);
+            //// ==========================================
+            //// 7) 发送完成后进行停止DDR操作和复位
+            //// ==========================================
+            //emit logMessage(QString::fromLocal8Bit("执行停止DDR及复位操作..."));
+            //HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_START_TX_2, 0x0);
+            //HITMC_SET_MODULE_para(m_vi, HardwareReg::REG_RESET, 0x0);
 
         }
         else {
@@ -408,12 +408,13 @@ void LvdsWorker::readSelfTestData(const QString& saveFilePath)
         ViInt32* rd_data = new ViInt32[rd_len];
 
         ViStatus status = HITMC_RAM_REV(m_vi, HardwareReg::RX_DDR_BASE_ADDR, rd_data, &rd_len);
-        if (status == 0) { // 假设0为成功
-            file.write(reinterpret_cast<const char*>(rd_data), rd_len * 4);
-        }
-        else {
-            emit errorOccurred(QString::fromLocal8Bit("读取接收DDR数据失败，错误码：%1").arg(status));
-        }
+        file.write(reinterpret_cast<const char*>(rd_data), rd_len * 4);
+        //if (status == 0) { // 假设0为成功 这个可能不对
+        //    file.write(reinterpret_cast<const char*>(rd_data), rd_len * 4);
+        //}
+        //else {
+        //    emit errorOccurred(QString::fromLocal8Bit("读取接收DDR数据失败，错误码：%1").arg(status));
+        //}
         delete[] rd_data;
     }
     else {
