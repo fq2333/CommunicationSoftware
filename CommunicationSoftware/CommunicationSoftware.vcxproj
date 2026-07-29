@@ -175,6 +175,7 @@
     <QtRcc Include="CommunicationSoftware.qrc" />
     <QtUic Include="CommunicationSoftware.ui" />
     <QtMoc Include="CommunicationSoftware.h" />
+    <ClCompile Include="CameraLinkWorker.cpp" />
     <ClCompile Include="CommunicationSoftware.cpp" />
     <ClCompile Include="LvdsWorker.cpp" />
     <ClCompile Include="main.cpp" />
@@ -183,6 +184,7 @@
     <QtMoc Include="LvdsWorker.h" />
   </ItemGroup>
   <ItemGroup>
+    <QtMoc Include="CameraLinkWorker.h" />
     <ClInclude Include="HardwareRegisters.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -40,12 +40,18 @@
     <ClCompile Include="LvdsWorker.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="CameraLinkWorker.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <QtMoc Include="LvdsWorker.h">
       <Filter>Header Files</Filter>
     </QtMoc>
     <QtMoc Include="CommunicationSoftware.h">
+      <Filter>Header Files</Filter>
+    </QtMoc>
+    <QtMoc Include="CameraLinkWorker.h">
       <Filter>Header Files</Filter>
     </QtMoc>
   </ItemGroup>

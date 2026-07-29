@@ -1,0 +1,42 @@
+bool CameraLinkWorker::buildCameraLinkPacket(const QImage& img16, QVector<quint32>& outBuffer)
+{
+    int width = img16.width();
+    int height = img16.height();
+
+    // 协议规定 2tap，即每个时钟(clk)出 2 个像素。所以每行有效 clk 数 = width / 2
+    int validClkPerLine = width / 2;
+    // 协议要求行间隔 10 clk[cite: 1]
+    int blankingClkPerLine = 10;
+
+    int totalClkPerLine = validClkPerLine + blankingClkPerLine;
+
+    // 预分配内存，提升效率 (4096行 * 每行总clk数)
+    outBuffer.reserve(height * totalClkPerLine);
+
+    for (int y = 0; y < height; ++y) {
+        // 获取第 y 行的 16-bit 像素数据指针
+        const quint16* scanLine = reinterpret_cast<const quint16*>(img16.constScanLine(y));
+
+        // 遍历一行中的每对像素 (A 和 B)
+        for (int x = 0; x < width; x += 2) {
+            // 取出像素，并强制屏蔽掉高4位，只保留最低 12bit (0x0FFF)
+            quint32 pixelA = scanLine[x] & 0x0FFF;     // 像素 A (左)
+            quint32 pixelB = scanLine[x + 1] & 0x0FFF; // 像素 B (右)
+
+            // 组装成一个 24bit 的数据包。硬件上映射为 Cmlk_data[23:0][cite: 1]
+            // 通常低 12位放像素A (对应 Port A/B)，高 12位放像素B (对应 Port C)
+            quint32 cmlkData24 = (pixelB << 12) | pixelA;
+
+            // 压入缓存区
+            outBuffer.append(cmlkData24);
+        }
+
+        // 行尾插入 10 clk 的行间隔空白数据 (Blanking)[cite: 1]
+        // 实际硬件的行有效信号 (Syn_line) 会在这 10 个周期内拉低[cite: 1]
+        for (int i = 0; i < blankingClkPerLine; ++i) {
+            outBuffer.append(0x00000000);
+        }
+    }
+
+    return true;
+}

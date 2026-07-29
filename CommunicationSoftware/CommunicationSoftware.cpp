@@ -18,6 +18,9 @@
 
 #include <QThread>
 #include "LvdsWorker.h"
+#include "CameraLinkWorker.h" // [新增]
+
+
 CommunicationSoftware::CommunicationSoftware(QWidget* parent)
     : QMainWindow(parent),
     mLvdsThread(nullptr), mLvdsWorker(nullptr),
@@ -68,6 +71,26 @@ void CommunicationSoftware::initThreads()
 
     // 启动多线程
     mLvdsThread->start();
+
+    // ==========================================
+    // [新增] CameraLink 多线程初始化
+    // ==========================================
+    m_cmlkThread = new QThread(this);
+    m_cmlkWorker = new CameraLinkWorker();
+    m_cmlkWorker->moveToThread(m_cmlkThread);
+
+    // 绑定跨线程工作信号
+    connect(this, &CommunicationSoftware::sigPackAndSaveCmlk, m_cmlkWorker, &CameraLinkWorker::packAndSaveOffline);
+
+    // 绑定状态回传信号到统一的 UI 槽函数（复用 LVDS 的槽即可，在同一个日志框打印）
+    connect(m_cmlkWorker, &CameraLinkWorker::logMessage, this, &CommunicationSoftware::onWorkerLogMessage);
+    connect(m_cmlkWorker, &CameraLinkWorker::errorOccurred, this, &CommunicationSoftware::onWorkerError);
+    connect(m_cmlkWorker, &CameraLinkWorker::operationCompleted, this, &CommunicationSoftware::onWorkerFinished);
+
+    connect(m_cmlkThread, &QThread::finished, m_cmlkWorker, &QObject::deleteLater);
+    m_cmlkThread->start();
+
+
 }
 void CommunicationSoftware::initUI()
 {
@@ -120,6 +143,38 @@ void CommunicationSoftware::initUI()
 
     lvdsLayout->addStretch();
     configToolBox->addItem(lvdsPage, QString::fromLocal8Bit("1. LVDS接口配置"));
+
+
+    // ==========================================
+    // [新增] 2. CameraLink 离线组包配置页
+    // ==========================================
+    QWidget* cmlkPage = new QWidget();
+    QVBoxLayout* cmlkLayout = new QVBoxLayout(cmlkPage);
+
+    m_leCmlkImagePath = new QLineEdit(QString::fromLocal8Bit("C:/test_image_12bit.png"), cmlkPage);
+    QPushButton* btnSelectCmlkImage = new QPushButton(QString::fromLocal8Bit("选择本地图像..."), cmlkPage);
+
+    // 默认输出路径设为软件运行目录，避免 C 盘权限问题
+    QString defaultBinPath = QCoreApplication::applicationDirPath() + "/cmlk_sim_packet.bin";
+    m_leCmlkSavePath = new QLineEdit(defaultBinPath, cmlkPage);
+    QPushButton* btnSelectCmlkSave = new QPushButton(QString::fromLocal8Bit("选择保存位置..."), cmlkPage);
+
+    QPushButton* btnPackAndSave = new QPushButton(QString::fromLocal8Bit("生成 CameraLink 数据包 (.bin)"), cmlkPage);
+
+    // 组装 UI
+    cmlkLayout->addWidget(new QLabel(QString::fromLocal8Bit("输入图像文件路径 (4096x4096):")));
+    cmlkLayout->addWidget(m_leCmlkImagePath);
+    cmlkLayout->addWidget(btnSelectCmlkImage);
+
+    cmlkLayout->addWidget(new QLabel(QString::fromLocal8Bit("生成的 .bin 文件保存路径:")));
+    cmlkLayout->addWidget(m_leCmlkSavePath);
+    cmlkLayout->addWidget(btnSelectCmlkSave);
+
+    cmlkLayout->addWidget(btnPackAndSave);
+    cmlkLayout->addStretch();
+
+    configToolBox->addItem(cmlkPage, QString::fromLocal8Bit("2. CameraLink 接口配置"));
+
 
     // (... 省略 UDP/RS422 页面的添加逻辑，与之前一致 ...)
 
@@ -218,6 +273,29 @@ void CommunicationSoftware::initUI()
         m_logBrowser->append(QString::fromLocal8Bit("[%1] 请求读取自检接收数据...").arg(QTime::currentTime().toString("HH:mm:ss")));
         });
 
+
+    // ==========================================
+    // [新增] CameraLink 信号与槽的连接
+    // ==========================================
+
+    // 选择输入图像按钮
+    connect(btnSelectCmlkImage, &QPushButton::clicked, this, [=]() {
+        QString filePath = QFileDialog::getOpenFileName(this, QString::fromLocal8Bit("选择CameraLink测试图像"), "", "(*.png *.bmp)");
+        if (!filePath.isEmpty()) m_leCmlkImagePath->setText(filePath);
+        });
+
+    // 选择输出文件按钮
+    connect(btnSelectCmlkSave, &QPushButton::clicked, this, [=]() {
+        QString filePath = QFileDialog::getSaveFileName(this, QString::fromLocal8Bit("选择数据包保存位置"), m_leCmlkSavePath->text(), "(*.bin)");
+        if (!filePath.isEmpty()) m_leCmlkSavePath->setText(filePath);
+        });
+
+    // 生成按钮：发射信号给子线程
+    connect(btnPackAndSave, &QPushButton::clicked, this, [=]() {
+        emit sigPackAndSaveCmlk(m_leCmlkImagePath->text(), m_leCmlkSavePath->text());
+        m_logBrowser->append(QString::fromLocal8Bit("[%1] 正在启动 CameraLink 离线组包任务...").arg(QTime::currentTime().toString("HH:mm:ss")));
+        });
+
 }
 
 // ==========================================
@@ -296,4 +374,19 @@ void CommunicationSoftware::cleanupThreads()
         // 注意：mLvdsWorker 会由于 QThread::finished 信号绑定了 deleteLater 而自动释放，无需手动 delete
         mLvdsWorker = nullptr;
     }
+
+    // [新增] 清理 CMLK 线程
+    if (m_cmlkThread) {
+        if (m_cmlkThread->isRunning()) {
+            m_cmlkThread->quit();
+            if (!m_cmlkThread->wait(3000)) {
+                m_cmlkThread->terminate();
+                m_cmlkThread->wait();
+            }
+        }
+        delete m_cmlkThread;
+        m_cmlkThread = nullptr;
+        m_cmlkWorker = nullptr;
+    }
+
 }

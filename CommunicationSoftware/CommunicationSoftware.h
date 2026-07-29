@@ -8,6 +8,7 @@
 
 // 前向声明 Qt 控件，减少头文件依赖
 class LvdsWorker;
+class CameraLinkWorker;
 class QLineEdit;
 class QGraphicsView;
 class QGraphicsScene;
@@ -28,6 +29,12 @@ signals:
     void sigCloseBoard();
     void sigResetBoard();
     void sigReadSelfTestData(const QString& saveFilePath);
+
+    // --- [新增] CameraLink 信号 ---
+    // 用于通知子线程执行离线组包和保存
+    void sigPackAndSaveCmlk(const QString& imagePath, const QString& savePath);
+
+
 protected:
     // [新增] 拦截窗口关闭事件
     void closeEvent(QCloseEvent* event) override;
@@ -45,6 +52,10 @@ private:
     QThread* mLvdsThread;
     LvdsWorker* mLvdsWorker;
 
+    // --- [新增] CameraLink 线程与对象 ---
+    QThread* m_cmlkThread;
+    CameraLinkWorker* m_cmlkWorker;
+
     // === 提升为 private 成员变量的 UI 控件 ===
     QLineEdit* m_leResource;       // 设备资源名输入框
     QLineEdit* m_leImagePath;      // 图像路径输入框
@@ -52,6 +63,10 @@ private:
     QGraphicsScene* m_imageScene;  // 图像展示区 Scene
     QTableWidget* m_dataTable;     // 数据包解析监控表格
     QTextBrowser* m_logBrowser;    // 系统运行日志区
+
+    // --- [新增] CameraLink UI 控件 ---
+    QLineEdit* m_leCmlkImagePath; // CMLK输入图像路径
+    QLineEdit* m_leCmlkSavePath;  // CMLK输出bin路径
 
     // 内部初始化与清理函数
     void initUI();
