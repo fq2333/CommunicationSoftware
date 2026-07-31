@@ -15,18 +15,27 @@
 #include <QGraphicsScene>
 #include <QTime>
 #include <QFileDialog>
+#include <QButtonGroup>
+#include <QComboBox>
+#include <QRadioButton>
+#include <QSpinBox>
+#include <QComboBox>
+
 
 #include <QThread>
 #include "LvdsWorker.h"
 #include "CameraLinkWorker.h" // [新增]
-
+#include "Rfm2gWorker.h"
+#include <sstream>
 
 CommunicationSoftware::CommunicationSoftware(QWidget* parent)
     : QMainWindow(parent),
     mLvdsThread(nullptr), mLvdsWorker(nullptr),
     m_leResource(nullptr), m_leImagePath(nullptr),
     m_imageView(nullptr), m_imageScene(nullptr),
-    m_dataTable(nullptr), m_logBrowser(nullptr) // 初始化指针为空，防止野指针
+    m_dataTable(nullptr), m_logBrowser(nullptr),
+    m_cmlkThread(nullptr), m_cmlkWorker(nullptr),
+    m_rfmThread(nullptr), m_rfmWorker(nullptr)// 初始化指针为空，防止野指针
 {
     ui.setupUi(this);
     initUI();
@@ -89,6 +98,31 @@ void CommunicationSoftware::initThreads()
 
     connect(m_cmlkThread, &QThread::finished, m_cmlkWorker, &QObject::deleteLater);
     m_cmlkThread->start();
+
+    // ==========================================
+    // 3. RFM2g 光纤反射内存 多线程初始化
+    // ==========================================
+    m_rfmThread = new QThread(this);
+    m_rfmWorker = new Rfm2gWorker();
+
+    // 移入子线程
+    m_rfmWorker->moveToThread(m_rfmThread);
+
+    // 绑定主UI到Worker的控制信号
+    connect(this, &CommunicationSoftware::sigInitRfm, m_rfmWorker, &Rfm2gWorker::initBoard);
+    connect(this, &CommunicationSoftware::sigSendRfmData, m_rfmWorker, &Rfm2gWorker::sendDynamicsData);
+    connect(this, &CommunicationSoftware::sigWaitRfmReturn, m_rfmWorker, &Rfm2gWorker::waitForReturnData);
+
+    // 绑定Worker状态回传到UI日志
+    connect(m_rfmWorker, &Rfm2gWorker::logMessage, this, &CommunicationSoftware::onWorkerLogMessage);
+    connect(m_rfmWorker, &Rfm2gWorker::errorOccurred, this, &CommunicationSoftware::onWorkerError);
+    connect(m_rfmWorker, &Rfm2gWorker::operationCompleted, this, &CommunicationSoftware::onWorkerFinished);
+
+    // 确保安全退出
+    connect(m_rfmThread, &QThread::finished, m_rfmWorker, &QObject::deleteLater);
+
+    // 启动线程
+    m_rfmThread->start();
 
 
 }
@@ -177,6 +211,151 @@ void CommunicationSoftware::initUI()
 
 
     // (... 省略 UDP/RS422 页面的添加逻辑，与之前一致 ...)
+    // ==========================================
+    // 3. 动力学数据流与 RFM2g 配置页
+    // ==========================================
+    QWidget* rfmPage = new QWidget();
+    QVBoxLayout* rfmLayout = new QVBoxLayout(rfmPage);
+
+    QLineEdit* leRfmDevice = new QLineEdit("/dev/rfm2g0", rfmPage); // Windows下可能是 "\\.\rfm2g0"
+    QPushButton* btnInitRfm = new QPushButton(QString::fromLocal8Bit("初始化 RFM 光纤网卡"), rfmPage);
+
+    QLineEdit* leRfmTargetNode = new QLineEdit("1", rfmPage); // 下位机节点ID
+    QLineEdit* leRfmTxOffset = new QLineEdit("0x1000", rfmPage); // 发送动力学数据的偏移
+    QPushButton* btnSendDynamics = new QPushButton(QString::fromLocal8Bit("模拟发送本地动力学数据并触发中断"), rfmPage);
+
+    QLineEdit* leRfmRxOffset = new QLineEdit("0x2000", rfmPage); // 接收回传数据的偏移
+    QLineEdit* leRfmRxLength = new QLineEdit("1024", rfmPage);   // 接收长度
+    QPushButton* btnWaitReturn = new QPushButton(QString::fromLocal8Bit("开启监听下位机回传"), rfmPage);
+
+    rfmLayout->addWidget(new QLabel(QString::fromLocal8Bit("设备路径 (Device Path):")));
+    rfmLayout->addWidget(leRfmDevice);
+    rfmLayout->addWidget(btnInitRfm);
+    rfmLayout->addWidget(new QLabel(QString::fromLocal8Bit("目标节点ID与发送Offset:")));
+    rfmLayout->addWidget(leRfmTargetNode);
+    rfmLayout->addWidget(leRfmTxOffset);
+    rfmLayout->addWidget(btnSendDynamics);
+    rfmLayout->addWidget(new QLabel(QString::fromLocal8Bit("接收Offset与期望字节长度:")));
+    rfmLayout->addWidget(leRfmRxOffset);
+    rfmLayout->addWidget(leRfmRxLength);
+    rfmLayout->addWidget(btnWaitReturn);
+    rfmLayout->addStretch();
+
+    //configToolBox->addItem(rfmPage, QString::fromLocal8Bit("3. RFM2g 光纤反射内存配置"));
+
+    // --- 3.2 动力学数据源选择 ---
+    QGroupBox* grpSource = new QGroupBox(QString::fromLocal8Bit("动力学数据源配置"), rfmPage);
+    QVBoxLayout* srcLayout = new QVBoxLayout(grpSource);
+
+    m_radioLocalFile = new QRadioButton(QString::fromLocal8Bit("本地离线 J2000 数据回放"), grpSource);
+    m_radioUdpNetwork = new QRadioButton(QString::fromLocal8Bit("外部 UDP 实时数据接入 (转发)"), grpSource);
+    m_radioLocalFile->setChecked(true); // 默认选中本地
+
+    QButtonGroup* srcGroup = new QButtonGroup(this);
+    srcGroup->addButton(m_radioLocalFile);
+    srcGroup->addButton(m_radioUdpNetwork);
+
+    srcLayout->addWidget(m_radioLocalFile);
+    srcLayout->addWidget(m_radioUdpNetwork);
+
+    // --- 3.3 本地文件参数 ---
+    QGroupBox* grpLocal = new QGroupBox(QString::fromLocal8Bit("本地回放参数"), grpSource);
+    QGridLayout* localLayout = new QGridLayout(grpLocal);
+
+    m_leJ2000Path = new QLineEdit("C:/J2000_Trajectory_Data.txt", grpLocal);
+    QPushButton* btnSelectData = new QPushButton(QString::fromLocal8Bit("浏览..."), grpLocal);
+    m_spinIntervalMs = new QSpinBox(grpLocal);
+    m_spinIntervalMs->setRange(1, 5000); // 1ms 到 5s
+    m_spinIntervalMs->setValue(10);      // 默认 10ms 步长
+    m_spinIntervalMs->setSuffix(" ms");
+
+    localLayout->addWidget(new QLabel(QString::fromLocal8Bit("数据文件路径:")), 0, 0);
+    localLayout->addWidget(m_leJ2000Path, 0, 1);
+    localLayout->addWidget(btnSelectData, 0, 2);
+    localLayout->addWidget(new QLabel(QString::fromLocal8Bit("逐行发送间隔:")), 1, 0);
+    localLayout->addWidget(m_spinIntervalMs, 1, 1);
+    srcLayout->addWidget(grpLocal);
+
+    // --- 3.4 UDP 网络参数 (预留界面) ---
+    QGroupBox* grpUdp = new QGroupBox(QString::fromLocal8Bit("UDP 网络参数"), grpSource);
+    QGridLayout* udpLayout = new QGridLayout(grpUdp);
+
+    m_cmbUdpMode = new QComboBox(grpUdp);
+    m_cmbUdpMode->addItems({ QString::fromLocal8Bit("单播 (Unicast)"), QString::fromLocal8Bit("组播 (Multicast)"), QString::fromLocal8Bit("广播 (Broadcast)") });
+    m_leUdpLocalPort = new QLineEdit("8080", grpUdp);
+    m_leUdpRemoteIp = new QLineEdit("192.168.1.100", grpUdp);
+    m_leUdpRemotePort = new QLineEdit("8081", grpUdp);
+
+    udpLayout->addWidget(new QLabel(QString::fromLocal8Bit("网络模式:")), 0, 0);
+    udpLayout->addWidget(m_cmbUdpMode, 0, 1);
+    udpLayout->addWidget(new QLabel(QString::fromLocal8Bit("本地监听端口:")), 1, 0);
+    udpLayout->addWidget(m_leUdpLocalPort, 1, 1);
+    udpLayout->addWidget(new QLabel(QString::fromLocal8Bit("远程目标 IP:")), 2, 0);
+    udpLayout->addWidget(m_leUdpRemoteIp, 2, 1);
+    udpLayout->addWidget(new QLabel(QString::fromLocal8Bit("远程目标端口:")), 3, 0);
+    udpLayout->addWidget(m_leUdpRemotePort, 3, 1);
+    srcLayout->addWidget(grpUdp);
+
+    // 动态联动：切换单选框时，禁用/启用对应的配置面板
+    connect(m_radioLocalFile, &QRadioButton::toggled, grpLocal, &QGroupBox::setEnabled);
+    connect(m_radioUdpNetwork, &QRadioButton::toggled, grpUdp, &QGroupBox::setEnabled);
+    grpUdp->setEnabled(false); // 初始状态禁用UDP面板
+
+    rfmLayout->addWidget(grpSource);
+
+    // --- 3.5 启停控制 ---
+    m_btnStartDynamics = new QPushButton(QString::fromLocal8Bit("启动数据发送"), rfmPage);
+    m_btnStartDynamics->setMinimumHeight(40);
+    rfmLayout->addWidget(m_btnStartDynamics);
+    rfmLayout->addStretch();
+
+    // 假设已将 rfmPage 加入 configToolBox
+    configToolBox->addItem(rfmPage, QString::fromLocal8Bit("3. RFM2g 动力学通信配置"));
+
+    // ==========================================
+    // 事件绑定与核心定时器初始化
+    // ==========================================
+    connect(btnSelectData, &QPushButton::clicked, this, [=]() {
+        QString path = QFileDialog::getOpenFileName(this, QString::fromLocal8Bit("选择 J2000 数据文件"), "", "Text Files (*.txt *.csv *dat);;All Files (*)");
+        if (!path.isEmpty()) m_leJ2000Path->setText(path);
+        });
+
+    // 实例化核心定时器，绑定到读取槽函数
+    m_dynamicsTimer = new QTimer(this);
+    // 设置定时器精度为毫秒级（对于低延迟仿真尤为关键）
+    m_dynamicsTimer->setTimerType(Qt::PreciseTimer);
+    connect(m_dynamicsTimer, &QTimer::timeout, this, &CommunicationSoftware::onDynamicsTimerTimeout);
+
+    connect(m_btnStartDynamics, &QPushButton::clicked, this, &CommunicationSoftware::on_btnStartDynamics_clicked);
+
+
+    // 2. 信号绑定 (假设已在 initThreads() 中实例化了 m_rfmWorker 和 m_rfmThread)
+    connect(btnInitRfm, &QPushButton::clicked, this, [=]() {
+        emit sigInitRfm(leRfmDevice->text());
+        });
+
+    connect(btnSendDynamics, &QPushButton::clicked, this, [=]() {
+        // 模拟从本地文件或UDP缓冲提取的一帧动力学数据 (例如J2000坐标系下的速度位置等)
+        QByteArray dummyData("Simulated Dynamics Data...");
+
+        // 将界面上的十六进制字符串转为数字
+        bool ok;
+        quint32 txOffset = leRfmTxOffset->text().toUInt(&ok, 16);
+        RFM2G_NODE targetNode = leRfmTargetNode->text().toUShort();
+
+        emit sigSendRfmData(dummyData, txOffset, targetNode);
+        });
+
+    connect(btnWaitReturn, &QPushButton::clicked, this, [=]() {
+        bool ok;
+        quint32 rxOffset = leRfmRxOffset->text().toUInt(&ok, 16);
+        quint32 rxLength = leRfmRxLength->text().toUInt();
+
+        // 发起阻塞监听任务（在子线程中运行，设定超时 5000ms）
+        emit sigWaitRfmReturn(rxOffset, rxLength, 5000);
+        });
+
+
 
     // ==========================================
     // 右侧：图像显示与数据监控区
@@ -322,19 +501,6 @@ void CommunicationSoftware::onWorkerFinished(const QString& result)
         m_logBrowser->append(QString("[%1] %2").arg(timeStr).arg(result));
     }
 }
-//
-//void CommunicationSoftware::cleanupThreads()
-//{
-//    if (mLvdsThread && mLvdsThread->isRunning()) {
-//        // 通知板卡关闭
-//        emit sigCloseBoard();
-//
-//        // 请求线程退出并等待它完成当前任务
-//        mLvdsThread->quit();
-//        mLvdsThread->wait(); // 阻塞主线程等待子线程安全结束，防止悬空指针
-//    }
-//}
-
 // [新增] 窗口关闭事件拦截
 void CommunicationSoftware::closeEvent(QCloseEvent* event)
 {
@@ -348,7 +514,6 @@ void CommunicationSoftware::closeEvent(QCloseEvent* event)
     // 接受关闭事件，允许窗口销毁
     event->accept();
 }
-
 // [新增] 统一的线程清理函数
 void CommunicationSoftware::cleanupThreads()
 {
@@ -388,5 +553,113 @@ void CommunicationSoftware::cleanupThreads()
         m_cmlkThread = nullptr;
         m_cmlkWorker = nullptr;
     }
+    // [新增] 清理 GNC 线程
+    if (m_rfmThread) {
+        if (m_rfmThread->isRunning()) {
+            m_rfmThread->quit();
+            if (!m_rfmThread->wait(3000)) {
+                m_rfmThread->terminate();
+                m_rfmThread->wait();
+            }
+        }
+        delete m_rfmThread;
+        m_rfmThread = nullptr;
+        m_rfmWorker = nullptr;
+    }
 
+}
+
+void CommunicationSoftware::on_btnStartDynamics_clicked()
+{
+    // 如果当前正在运行，则执行“停止”逻辑
+    if (m_dynamicsTimer->isActive()) {
+        m_dynamicsTimer->stop();
+        if (m_dynamicsFile.is_open()) {
+            m_dynamicsFile.close();
+        }
+        m_btnStartDynamics->setText(QString::fromLocal8Bit("启动数据发送"));
+        m_logBrowser->append(QString::fromLocal8Bit("已手动停止动力学数据发送。"));
+
+        // 如果接入了UDP，这里可以抛出关闭 UDP 监听的信号
+        // emit sigStopUdpListen();
+        return;
+    }
+
+    // 执行“启动”逻辑
+    if (m_radioLocalFile->isChecked()) {
+        // --- 本地文件回放模式 ---
+        std::string filePath = m_leJ2000Path->text().toLocal8Bit().constData();
+        m_dynamicsFile.open(filePath, std::ios::in);
+
+        if (!m_dynamicsFile.is_open()) {
+            onWorkerError(QString::fromLocal8Bit("无法打开动力学数据文件：") + m_leJ2000Path->text());
+            return;
+        }
+
+        m_currentLineNumber = 0;
+        int interval = m_spinIntervalMs->value();
+
+        m_dynamicsTimer->start(interval); // 启动定时器
+        m_btnStartDynamics->setText(QString::fromLocal8Bit("停止数据发送"));
+        m_logBrowser->append(QString::fromLocal8Bit("开始读取本地文件，发送步长: %1 ms").arg(interval));
+
+    }
+    else {
+        // --- UDP 网络模式 ---
+        m_btnStartDynamics->setText(QString::fromLocal8Bit("停止 UDP 转发"));
+        m_logBrowser->append(QString::fromLocal8Bit("已启动 UDP 监听端口: ") + m_leUdpLocalPort->text() + QString::fromLocal8Bit("，准备向光反直接转发。"));
+
+        // 预留触发 UDP Worker 的信号
+        // emit sigStartUdpListen(m_leUdpLocalPort->text().toUShort());
+    }
+}
+
+// 定时器心跳槽函数：每次执行只读一行，立刻交出 CPU 控制权给 UI 事件循环
+void CommunicationSoftware::onDynamicsTimerTimeout()
+{
+    std::string dataLine;
+
+    // 如果读到文件末尾
+    if (!std::getline(m_dynamicsFile, dataLine)) {
+        on_btnStartDynamics_clicked(); // 复用按钮槽函数执行停止清理
+        m_logBrowser->append(QString::fromLocal8Bit("文件读取完毕，发送结束。"));
+        return;
+    }
+
+    m_currentLineNumber++;
+    const int DATA_SIZE = 133;
+
+    // 兼容空格、制表符和逗号分隔
+    std::replace(dataLine.begin(), dataLine.end(), ',', ' ');
+
+    std::array<double, 133> vecDouble{};
+    std::istringstream input(dataLine);
+
+    int valueCount = 0;
+    double value = 0.0;
+
+    while (valueCount < DATA_SIZE && input >> value) {
+        vecDouble[valueCount] = value;
+        ++valueCount;
+    }
+
+    if (valueCount != DATA_SIZE) {
+        onWorkerError(QString::fromLocal8Bit("第 %1 行数据列数错误：实际 %2 列，应为 %3 列，已跳过。")
+            .arg(m_currentLineNumber).arg(valueCount).arg(DATA_SIZE));
+        return;
+    }
+
+    // 序列化并通过信号跨线程丢给底层光反卡发送
+    QByteArray rawData(reinterpret_cast<const char*>(vecDouble.data()), DATA_SIZE * sizeof(double));
+
+    // 注意：假设界面的光反 Offset 等参数存储在对应的类成员中，这里硬编码为您示例
+    quint32 baseOffset = 0x1000;
+    RFM2G_NODE targetNode = 1;
+
+    emit sigSendRfmData(rawData, baseOffset, targetNode);
+
+    // 可选：如果要避免 UI 刷屏太快导致卡顿，可以做降采样显示日志（每发送 100 行打印一次）
+    if (m_currentLineNumber % 100 == 0) {
+        m_logBrowser->append(QString::fromLocal8Bit("已发送 %1 行动力学数据...").arg(m_currentLineNumber));
+    }
 }

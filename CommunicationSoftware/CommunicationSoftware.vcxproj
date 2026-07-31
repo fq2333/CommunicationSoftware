@@ -80,6 +80,7 @@
   <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
     <Import Project="$(QtMsBuild)\Qt.props" />
+    <Import Project="GE.props" />
   </ImportGroup>
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)' == 'Release|x64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
@@ -172,6 +173,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Rfm2gWorker.cpp" />
     <QtRcc Include="CommunicationSoftware.qrc" />
     <QtUic Include="CommunicationSoftware.ui" />
     <QtMoc Include="CommunicationSoftware.h" />
@@ -184,6 +186,7 @@
     <QtMoc Include="LvdsWorker.h" />
   </ItemGroup>
   <ItemGroup>
+    <QtMoc Include="Rfm2gWorker.h" />
     <QtMoc Include="CameraLinkWorker.h" />
     <ClInclude Include="HardwareRegisters.h" />
   </ItemGroup>

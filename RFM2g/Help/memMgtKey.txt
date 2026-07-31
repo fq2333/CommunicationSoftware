@@ -1,0 +1,56 @@
+MemMgtKey.txt
+
+Registry Modification of "SystemPages" value
+
+Windows  XP and Server 2003 manages page tables by 
+calculating the number of Page Table Entries (PTE's) to allocate. 
+When NT was developed, it was not considered that a hardware system could 
+have devices (such as Reflective Memory or large memory graphic cards) could 
+have more peripheral memory that system memory.
+ 
+This problem is solved by changing the number of PTE to allocate. The 
+Windows OS looks for the "SystemPages" in the registry for the value.
+
+Change the registry on XP to allow the 2Gigabit 
+RFM driver (pmc55xx.sys) to load and start.
+
+Please be sure to back up your system and create an
+emergency repair disk before editing the registry.
+If you incorrectly modify the registry, then Windows
+may become nonfunctional on your computer. 
+ 
+1.  Select "Run..." from the "Start" menu.
+
+2.  Type "regedit.exe" and press "Enter" to start the
+    "Registry Editor". You must have Administrator privledges to
+    save changes made in the registry.
+            
+3.  Find the following registry key:
+    [HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\
+        Session Manager\Memory Management]
+
+4.  Modify the "SystemPages" registry value.  
+    The maximum amount for Windows XP and Server 2003 
+    the max value is 0xffffffff.  
+    Please make a note of the original
+    value in case you want to restore it later.
+
+5.  Reboot the computer when finished, restart Windows,
+    and then run the "RFM2g Command Line Interpreter" to
+    see if the "Cannot open RFM file (\\.\rfm2g1)!" dialog
+    message is displayed.
+                
+    If the RFM card still cannot be opened, then
+    repeat the previous steps and increase the "SystemPages"
+    registry value.  Please be advised that by using a
+                larger value, more system resources (i.e. memory) are
+                being used.  
+
+
+Change using the following
+formula:
+
+SystemPages =	 20,000   for the firest 32 Megabytes in a system of Main memory
+		  8,192   for each addtional 32 Megabytes of Main memory 		
+                  8,192   for each 32 Megabytes of Reflective Memory
+

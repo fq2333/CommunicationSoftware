@@ -43,6 +43,9 @@
     <ClCompile Include="CameraLinkWorker.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Rfm2gWorker.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <QtMoc Include="LvdsWorker.h">
@@ -52,6 +55,9 @@
       <Filter>Header Files</Filter>
     </QtMoc>
     <QtMoc Include="CameraLinkWorker.h">
+      <Filter>Header Files</Filter>
+    </QtMoc>
+    <QtMoc Include="Rfm2gWorker.h">
       <Filter>Header Files</Filter>
     </QtMoc>
   </ItemGroup>

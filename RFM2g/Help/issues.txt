@@ -1,0 +1,100 @@
+                             ISSUES
+  
+	  Reflective Memory Drivers for Windows 
+
+		         SW/RFM2G-WIN
+                      
+
+----------------------------------------------------------------
+    issues.txt
+    Copyright (C) 2010 by GE Intelligent Platforms Embedded Systems, Inc
+    International copyright secured.  All rights reserved.
+----------------------------------------------------------------
+
+START OF ISSUES:
+
+----------------------------------------------------------------
+----------------------------------------------------------------
+
+Issue #1.
+    
+    Symptoms:
+        A "FATAL ERROR" dialog box is displayed with the message
+        "Cannot open RFM file (\\.\rfm2g1)!" when a program, 
+        such as the "RFM2g Command Line Interpreter", tries to
+        open the "\\.\rfm2g" device.
+
+    Cause:
+        This is occurs because the call to the "rfm2gOpen" function
+        in the RFM2GDLL_STDC_32/64 Dynamic Link Library (DLL) failed.
+        This can occur for several reasons.
+
+    Possible Problems and/or Solutions:
+        A.  Power down the system and confirm that the RFM2g
+            card is correctly jumpered and  properly inserted
+            into an appropriate PCI, CPCI, or PMC slot.
+            Please refer to the RFM Product Manual that came
+            with the RFM card for more specifics.
+
+        B.  In Windows, verify that all previous versions
+            of the RFM Device Drivers are uninstalled from
+            the system by using "Add/Remove Programs" in
+            the "Control Panel".
+           
+            As a safety check, you can also search the system for
+            files named "PMC55xx.SYS/pmc5565.sys", and
+            "RFM2gDLL_STDC.DLL".  Remove any copies of these
+            files that are found.
+ 
+            Reboot the system when finished to allow the
+            uninstall program to clean up after itself,
+            then install the new version of the RFM drivers.
+        
+        C.  The Windows system may be running out of page table 
+	    entries (PTEs).
+            PTEs are used to map the memory on the RFM card into
+            the virtual address space of the Windows kernel.
+            If there are not enough PTEs available, then the
+            RFM card cannot be opened.  The number of available
+            PTEs can be increased by modifying the "SystemPages"
+            registry value under the registry key:
+
+		[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management]  
+
+	    and then rebooting
+            the system.  For more detailed instructions follow
+            the directions below.
+
+            ** WARNING **   
+ 
+	    Please be sure to back up your system and create an
+            emergency repair disk before editing the registry.
+            If you incorrectly modify the registry, then Windows
+            may become nonfunctional on your computer. 
+
+            1.  Select "Run..." from the "Start" menu.
+            2.  Type "regedit.exe" and press "Enter" to start the
+                "Registry Editor".
+            3.  Find the following registry key with the "Registry Editor":
+		  [HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\
+                      Session Manager\Memory Management]
+            4.  Modify the "SystemPages" registry value.  For Older 
+		Systems, Recommended values to try are between 20000 and 50000 decimal.
+                Try using a lower value (i.e. 20000) intially.Please make 
+		a note of the original value in case you want to restore it later.
+            5.  Reboot the computer when finished, restart Windows,
+                and then run the "RFM Command Line Interpreter" to
+                see if the "Cannot open RFM file (\\.\rfm2g1)!" dialog
+                message is displayed.
+                
+                If the RFM card still cannot be opened, then
+                repeat the previous steps and increase the "SystemPages"
+                registry value.  Please be advised that by using a
+                larger value, more system resources (i.e. memory) are
+                being used.  
+
+        D.  If you have tried steps A, B, and C above and are
+            still having problems, then the RFM card may not
+            be functioning correctly.  Please contact GE Intelligent Platforms Embedded Systems, Inc
+            for further assistance.
+
