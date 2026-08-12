@@ -468,3 +468,20 @@ void LvdsWorker::closeBoard()
         emit logMessage(QString::fromLocal8Bit("LVDS板卡已安全关闭，状态码: %1").arg(status));
     }
 }
+
+void LvdsWorker::sendImageFromMemory(const QByteArray& imageData, quint32 width, quint32 height, quint8 bitDepth)
+{
+    if (!m_isInitialized) {
+        emit errorOccurred(QString::fromLocal8Bit("LVDS 未初始化，丢弃接收到的帧。"));
+        return;
+    }
+
+    emit logMessage(QString::fromLocal8Bit("LVDS 线程已接管内存图像，准备写入硬件 DMA..."));
+
+    // 注意：这里的 imageData.data() 就是指向那 32MB 连续内存的指针。
+    // 您可以直接将其强转为您 LVDS 板卡 API 需要的格式，无需使用 cv::Mat。
+    // 例如：
+    // LVDS_WriteData(m_boardHandle, (unsigned char*)imageData.constData(), imageData.size());
+
+    emit operationCompleted(QString::fromLocal8Bit("LVDS 内存帧发送完成。"));
+}

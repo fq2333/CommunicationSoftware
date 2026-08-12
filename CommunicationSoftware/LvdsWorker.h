@@ -27,6 +27,8 @@ public slots:
     void sendLocalImage(const QString& imagePath);
     void resetBoard();                                   // 步骤3：独立复位
     void readSelfTestData(const QString& saveFilePath);  // 步骤5：读取自检数据
+    // 新增：直接从内存缓冲区读取并下发
+    void sendImageFromMemory(const QByteArray& imageData, quint32 width, quint32 height, quint8 bitDepth);
 
 private:
     ViSession m_vi;

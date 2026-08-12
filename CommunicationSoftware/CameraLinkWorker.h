@@ -33,7 +33,7 @@ private:
     void* m_cmlkHandle;
 
     // 核心算法：将 16-bit 图像提取为符合 2tap 12bit 的二进制数据包
-    bool buildCameraLinkPacket(const QImage& img16, QVector<quint32>& outBuffer);
+    bool buildCameraLinkPacket(const QImage& img16, QByteArray& outBuffer);
 };
 
 #endif // CAMERALINKWORKER_H

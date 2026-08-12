@@ -48,7 +48,7 @@ void CameraLinkWorker::sendLocalImage(const QString& imagePath)
     // 转换为 uint16 灰度格式
     QImage img16 = img.convertToFormat(QImage::Format_Grayscale16);
 
-    QVector<quint32> cmlkDataPacket;
+    QByteArray cmlkDataPacket;
     emit logMessage(QString::fromLocal8Bit("正在进行 2tap 12bit 数据组包..."));
 
     if (buildCameraLinkPacket(img16, cmlkDataPacket)) {
@@ -72,20 +72,17 @@ void CameraLinkWorker::sendLocalImage(const QString& imagePath)
     }
 }
 
-bool CameraLinkWorker::buildCameraLinkPacket(const QImage& img16, QVector<quint32>& outBuffer)
+bool CameraLinkWorker::buildCameraLinkPacket(const QImage& img16, QByteArray& outBuffer)
 {
     int width = img16.width();
     int height = img16.height();
 
-    // 协议规定 2tap，即每个时钟(clk)出 2 个像素。所以每行有效 clk 数 = width / 2
-    int validClkPerLine = width / 2;
-    // 协议要求行间隔 10 clk[cite: 1]
-    int blankingClkPerLine = 10;
+    // 协议规定 2tap，即每个时钟(clk)出 2 个像素（共 24bit）。
+    // 在紧凑打包下，每 2 个像素占用 3 个字节 (3 Bytes)。
+    int bytesPerLine = (width / 2) * 3;
 
-    int totalClkPerLine = validClkPerLine + blankingClkPerLine;
-
-    // 预分配内存，提升效率 (4096行 * 每行总clk数)
-    outBuffer.reserve(height * totalClkPerLine);
+    // 预分配内存：4096行 * 6144字节/行 = 25,165,824 字节 (精准 24MB)
+    outBuffer.reserve(height * bytesPerLine);
 
     for (int y = 0; y < height; ++y) {
         // 获取第 y 行的 16-bit 像素数据指针
@@ -93,22 +90,18 @@ bool CameraLinkWorker::buildCameraLinkPacket(const QImage& img16, QVector<quint3
 
         // 遍历一行中的每对像素 (A 和 B)
         for (int x = 0; x < width; x += 2) {
-            // 取出像素，并强制屏蔽掉高4位，只保留最低 12bit (0x0FFF)
-            quint32 pixelA = scanLine[x] & 0x0FFF;     // 像素 A (左)
-            quint32 pixelB = scanLine[x + 1] & 0x0FFF; // 像素 B (右)
+            // 1. 取出像素，强制屏蔽高4位，仅保留有效 12bit (0x0FFF)
+            quint16 pixelA = scanLine[x] & 0x0FFF;     // 像素 A (左侧，分配在 Port A/B)
+            quint16 pixelB = scanLine[x + 1] & 0x0FFF; // 像素 B (右侧，分配在 Port C)
 
-            // 组装成一个 24bit 的数据包。硬件上映射为 Cmlk_data[23:0][cite: 1]
-            // 通常低 12位放像素A (对应 Port A/B)，高 12位放像素B (对应 Port C)
+            // 2. 将两个 12bit 组合成一个 24bit 的逻辑块
+            // cmlkData24 结构: [23:12] 为 PixelB, [11:0] 为 PixelA
             quint32 cmlkData24 = (pixelB << 12) | pixelA;
 
-            // 压入缓存区
-            outBuffer.append(cmlkData24);
-        }
-
-        // 行尾插入 10 clk 的行间隔空白数据 (Blanking)[cite: 1]
-        // 实际硬件的行有效信号 (Syn_line) 会在这 10 个周期内拉低[cite: 1]
-        for (int i = 0; i < blankingClkPerLine; ++i) {
-            outBuffer.append(0x00000000);
+            // 3. 将 24bit 拆分为 3 个连续的 8bit 字节并压入缓冲区 (小端模式存储)
+            outBuffer.append(static_cast<char>(cmlkData24 & 0xFF));         // Byte 0: A 的低 8 位
+            outBuffer.append(static_cast<char>((cmlkData24 >> 8) & 0xFF));    // Byte 1: A 的高 4 位 + B 的低 4 位
+            outBuffer.append(static_cast<char>((cmlkData24 >> 16) & 0xFF));   // Byte 2: B 的高 8 位
         }
     }
 
@@ -135,25 +128,29 @@ void CameraLinkWorker::packAndSaveOffline(const QString& imagePath, const QStrin
         return;
     }
 
-    QVector<quint32> cmlkDataPacket;
+    QByteArray cmlkDataPacket;
     emit logMessage(QString::fromLocal8Bit("正在执行 2tap 12bit 协议组包..."));
 
-    // buildCameraLinkPacket 函数在上一条回复中已提供
+    // 注意：请确保底层的这个组包函数已经是生成紧凑格式（QByteArray）的最新版本
     if (buildCameraLinkPacket(img16, cmlkDataPacket)) {
-        emit logMessage(QString::fromLocal8Bit("组包完成，总数据量: %1 Words (32-bit)。正在写入文件...").arg(cmlkDataPacket.size()));
+
+        // 【修改1】单位改为“字节”
+        emit logMessage(QString::fromLocal8Bit("组包完成，总数据量: %1 字节。正在写入文件...").arg(cmlkDataPacket.size()));
 
         QFile file(savePath);
         if (file.open(QIODevice::WriteOnly)) {
-            // 将 QVector 中的数据原封不动写入 .bin 文件
-            qint64 written = file.write(reinterpret_cast<const char*>(cmlkDataPacket.constData()),
-                cmlkDataPacket.size() * sizeof(quint32));
+
+            // 【修改2：致命错误修正】QByteArray 天然支持整体写入，不需要强转指针，绝不能再乘 sizeof(quint32)
+            qint64 written = file.write(cmlkDataPacket);
+
             file.close();
 
-            if (written == cmlkDataPacket.size() * sizeof(quint32)) {
+            if (written == cmlkDataPacket.size()) {
                 emit operationCompleted(QString::fromLocal8Bit("CameraLink 数据包已成功保存至: ") + savePath);
             }
             else {
-                emit errorOccurred(QString::fromLocal8Bit("文件写入不完整，可能磁盘空间不足！"));
+                emit errorOccurred(QString::fromLocal8Bit("文件写入不完整，预期 %1 字节，实际写入 %2 字节！")
+                    .arg(cmlkDataPacket.size()).arg(written));
             }
         }
         else {

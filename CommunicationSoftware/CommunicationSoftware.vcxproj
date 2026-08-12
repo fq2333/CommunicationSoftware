@@ -142,7 +142,7 @@
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
     </ClCompile>
     <Link>
-      <SubSystem>Windows</SubSystem>
+      <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
@@ -168,7 +168,7 @@
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
     </ClCompile>
     <Link>
-      <SubSystem>Windows</SubSystem>
+      <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>false</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
@@ -186,6 +186,7 @@
     <QtMoc Include="LvdsWorker.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="ProtocolData.h" />
     <QtMoc Include="Rfm2gWorker.h" />
     <QtMoc Include="CameraLinkWorker.h" />
     <ClInclude Include="HardwareRegisters.h" />

@@ -7,6 +7,7 @@
 // 引入 GE Fanuc RFM2g 的官方 API 头文件
 #include <windows.h>
 #include "rfm2g_api.h" 
+#include "ProtocolData.h"
 
 class Rfm2gWorker : public QObject
 {
@@ -21,6 +22,10 @@ signals:
     void operationCompleted(const QString& result);
     // 将接收到的数据发给主UI或其他Worker（如后续要转给LVDS发送）
     void returnDataReceived(const QByteArray& data);
+    // 新增：解析完毕后的纯图像数据跨线程抛出信号
+    void parsedImageReceived(const QByteArray& imageData, quint32 width, quint32 height, quint8 bitDepth);
+    // 通知主 UI，当前帧已彻底闭环完成
+    void simulationStepFinished();
 
 public slots:
     void initBoard(const QString& devicePath);
@@ -31,10 +36,23 @@ public slots:
 
     // 监听下位机返回的中断，并读取指定长度的数据
     void waitForReturnData(quint32 offset, quint32 length, quint32 timeoutMs);
+    // 新增：组合槽函数，发送动力学后立即阻塞等待回传
+    void sendAndWaitDynamics(const QByteArray& data, quint32 txOffset, RFM2G_NODE targetNode, quint32 rxOffset, quint32 timeoutMs);
+    // ==========================================
+    // [新增] 独立接收线程使用的连续监听函数
+    // ==========================================
+    void startContinuousListen(quint32 rxOffset);
+    void stopContinuousListen();
+    // ==========================================
+    // [新增] 安全清空指定的物理内存区块
+    // ==========================================
+    void clearMemoryRegion(quint32 offset, quint32 size);
 
 private:
     RFM2GHANDLE m_handle;
     bool m_isInitialized;
+    // [新增] 控制连续监听循环的标志位
+    bool m_isListening = false;
 };
 
 #endif // RFM2GWORKER_H
