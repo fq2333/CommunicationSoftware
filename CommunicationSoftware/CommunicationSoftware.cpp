@@ -36,6 +36,8 @@ CommunicationSoftware::CommunicationSoftware(QWidget* parent)
     m_rfmRxThread(nullptr), m_rfmRxWorker(nullptr)
 {
     ui.setupUi(this);
+    // 【新增】：初始化 UDP 套接字，挂载到当前主窗口树下，退出时自动销毁
+    m_udpSocket = new QUdpSocket(this);
     initUI();
     initThreads();
 }
@@ -68,6 +70,12 @@ void CommunicationSoftware::initThreads()
     m_cmlkThread = new QThread(this);
     m_cmlkWorker = new CameraLinkWorker();
     m_cmlkWorker->moveToThread(m_cmlkThread);
+
+    // [新增] 硬件控制信号绑定
+    connect(this, &CommunicationSoftware::sigInitCmlk, m_cmlkWorker, &CameraLinkWorker::initializeBoard);
+    connect(this, &CommunicationSoftware::sigResetCmlk, m_cmlkWorker, &CameraLinkWorker::resetBoard);
+    connect(this, &CommunicationSoftware::sigCloseCmlk, m_cmlkWorker, &CameraLinkWorker::closeBoard);
+    connect(this, &CommunicationSoftware::sigSendCmlkImage, m_cmlkWorker, &CameraLinkWorker::sendLocalImage);
     connect(this, &CommunicationSoftware::sigPackAndSaveCmlk, m_cmlkWorker, &CameraLinkWorker::packAndSaveOffline);
     connect(m_cmlkWorker, &CameraLinkWorker::logMessage, this, &CommunicationSoftware::onWorkerLogMessage);
     connect(m_cmlkWorker, &CameraLinkWorker::errorOccurred, this, &CommunicationSoftware::onWorkerError);
@@ -115,9 +123,13 @@ void CommunicationSoftware::initThreads()
     //connect(m_rfmRxWorker, &Rfm2gWorker::parsedImageReceived, mLvdsWorker, &LvdsWorker::sendImageFromMemory);
     connect(m_rfmRxWorker, &Rfm2gWorker::parsedImageReceived, this, &CommunicationSoftware::routeImageToVideo);
     // ==========================================
-    // 3. 【新增】：将中枢路由信号接到具体的板卡 Worker 上
+   // ==========================================
+    // 3. 将中枢路由信号接到具体的板卡 Worker 上
     // ==========================================
     connect(this, &CommunicationSoftware::sigSendToLvdsMem, mLvdsWorker, &LvdsWorker::sendImageFromMemory);
+
+    // 【新增】：将路由中心的 CameraLink 分发信号，准确接到刚才声明的槽函数上
+    connect(this, &CommunicationSoftware::sigSendToCmlkMem, m_cmlkWorker, &CameraLinkWorker::sendImageFromMemory);
     // 内存清理与启动
     connect(m_rfmTxThread, &QThread::finished, m_rfmTxWorker, &QObject::deleteLater);
     connect(m_rfmRxThread, &QThread::finished, m_rfmRxWorker, &QObject::deleteLater);
@@ -133,8 +145,8 @@ void CommunicationSoftware::initUI()
     setCentralWidget(mainSplitter);
 
     QToolBox* configToolBox = new QToolBox(mainSplitter);
-    configToolBox->setMinimumWidth(300);
-    configToolBox->setMaximumWidth(400);
+    configToolBox->setMinimumWidth(400);
+    configToolBox->setMaximumWidth(500);
 
     // ==========================================
     // 1. LVDS 接口配置页
@@ -168,27 +180,85 @@ void CommunicationSoftware::initUI()
     configToolBox->addItem(lvdsPage, QString::fromLocal8Bit("1. LVDS接口配置"));
 
     // ==========================================
-    // 2. CameraLink 离线组包配置页
+    // 2. CameraLink 接口配置页
     // ==========================================
     QWidget* cmlkPage = new QWidget();
     QVBoxLayout* cmlkLayout = new QVBoxLayout(cmlkPage);
 
+    // 【修改这行代码】：利用 settings 读取上一次的配置，如果没读到，默认给 "PXI1::0::0::INSTR"
+    m_leCmlkResource = new QLineEdit(settings.value("CmlkResource", "PXI1::0::0::INSTR").toString(), cmlkPage);
+
+    QPushButton* btnInitCmlk = new QPushButton(QString::fromLocal8Bit("初始化 CameraLink 板卡"), cmlkPage);
+    QPushButton* btnResetCmlk = new QPushButton(QString::fromLocal8Bit("复位板卡"), cmlkPage);
+    QPushButton* btnDisconnectCmlk = new QPushButton(QString::fromLocal8Bit("断开连接"), cmlkPage);
+
     m_leCmlkImagePath = new QLineEdit(QString::fromLocal8Bit("C:/test_image_12bit.png"), cmlkPage);
     QPushButton* btnSelectCmlkImage = new QPushButton(QString::fromLocal8Bit("选择本地图像..."), cmlkPage);
+    QPushButton* btnSendCmlkImage = new QPushButton(QString::fromLocal8Bit("写入 CameraLink 板卡并发送"), cmlkPage); // [新增]
+
     QString defaultBinPath = QCoreApplication::applicationDirPath() + "/cmlk_sim_packet.bin";
     m_leCmlkSavePath = new QLineEdit(defaultBinPath, cmlkPage);
     QPushButton* btnSelectCmlkSave = new QPushButton(QString::fromLocal8Bit("选择保存位置..."), cmlkPage);
-    QPushButton* btnPackAndSave = new QPushButton(QString::fromLocal8Bit("生成 CameraLink 数据包 (.bin)"), cmlkPage);
+    // 【修改这行】：更新按钮的文字提示
+    QPushButton* btnPackAndSave = new QPushButton(QString::fromLocal8Bit("生成 CameraLink 数据包 (.bin 与 .raw)"), cmlkPage);
+
+    // 拼装 UI
+    cmlkLayout->addWidget(new QLabel(QString::fromLocal8Bit("设备资源名:")));
+    cmlkLayout->addWidget(m_leCmlkResource);
+    cmlkLayout->addWidget(btnInitCmlk);
+    cmlkLayout->addWidget(btnResetCmlk);
+    cmlkLayout->addWidget(btnDisconnectCmlk);
 
     cmlkLayout->addWidget(new QLabel(QString::fromLocal8Bit("输入图像文件路径 (4096x4096):")));
     cmlkLayout->addWidget(m_leCmlkImagePath);
     cmlkLayout->addWidget(btnSelectCmlkImage);
-    cmlkLayout->addWidget(new QLabel(QString::fromLocal8Bit("生成的 .bin 文件保存路径:")));
+    cmlkLayout->addWidget(btnSendCmlkImage);
+
+    cmlkLayout->addWidget(new QLabel(QString::fromLocal8Bit("离线生成 .bin 保存路径:")));
     cmlkLayout->addWidget(m_leCmlkSavePath);
     cmlkLayout->addWidget(btnSelectCmlkSave);
     cmlkLayout->addWidget(btnPackAndSave);
+
     cmlkLayout->addStretch();
     configToolBox->addItem(cmlkPage, QString::fromLocal8Bit("2. CameraLink 接口配置"));
+
+    // ==========================================
+    // [新增] 绑定 CameraLink 的硬件控制事件
+    // ==========================================
+    connect(btnInitCmlk, &QPushButton::clicked, this, [=]() {
+        emit sigInitCmlk(m_leCmlkResource->text());
+        m_logBrowser->append(QString::fromLocal8Bit("[%1] 发送 CameraLink 初始化指令...").arg(QTime::currentTime().toString("HH:mm:ss")));
+        });
+
+    connect(btnResetCmlk, &QPushButton::clicked, this, [=]() {
+        emit sigResetCmlk();
+        });
+
+    connect(btnDisconnectCmlk, &QPushButton::clicked, this, [=]() {
+        emit sigCloseCmlk();
+        });
+
+    connect(btnSendCmlkImage, &QPushButton::clicked, this, [=]() {
+        emit sigSendCmlkImage(m_leCmlkImagePath->text());
+        m_logBrowser->append(QString::fromLocal8Bit("[%1] 准备加载 CameraLink 图像并投递至硬件...").arg(QTime::currentTime().toString("HH:mm:ss")));
+        });
+    connect(btnSelectCmlkImage, &QPushButton::clicked, this, [=]() {
+        QString filePath = QFileDialog::getOpenFileName(this, QString::fromLocal8Bit("选择CameraLink测试图像"), "", "(*.png *.bmp)");
+        if (!filePath.isEmpty()) m_leCmlkImagePath->setText(filePath);
+        });
+    // 【修改这行】：让弹出的文件保存对话框同时支持提示这两种格式
+    connect(btnSelectCmlkSave, &QPushButton::clicked, this, [=]() {
+        QString filePath = QFileDialog::getSaveFileName(this,
+            QString::fromLocal8Bit("选择数据包保存位置 (将自动生成同名双文件)"),
+            m_leCmlkSavePath->text(),
+            "Data Files (*.bin *.raw)");
+
+        if (!filePath.isEmpty()) m_leCmlkSavePath->setText(filePath);
+        });
+    connect(btnPackAndSave, &QPushButton::clicked, this, [=]() {
+        emit sigPackAndSaveCmlk(m_leCmlkImagePath->text(), m_leCmlkSavePath->text());
+        m_logBrowser->append(QString::fromLocal8Bit("[%1] 正在启动 CameraLink 离线组包任务...").arg(QTime::currentTime().toString("HH:mm:ss")));
+        });
 
     // ==========================================
     // 3. 动力学数据流与 RFM2g 配置页
@@ -212,28 +282,46 @@ void CommunicationSoftware::initUI()
     rfmLayout->addWidget(new QLabel(QString::fromLocal8Bit("接收数据(图像头)Offset:")));
     rfmLayout->addWidget(m_leRfmRxOffset);
 
+    // ...[在 initUI 中找到配置路由的地方，替换为以下代码] ...
+    QGroupBox * grpRoute = new QGroupBox(QString::fromLocal8Bit("数据转发路由与相机绑定"), rfmPage);
+    QGridLayout* routeLayout = new QGridLayout(grpRoute);
+
     // 1. 实例化复选框
-    m_chkRouteLvds = new QCheckBox(QString::fromLocal8Bit("LVDS"), rfmPage);
-    m_chkRouteCmlk = new QCheckBox(QString::fromLocal8Bit("CameraLink"), rfmPage);
-    m_chkRoute2711 = new QCheckBox(QString::fromLocal8Bit("2711 接口"), rfmPage);
-    m_chkRouteRS422 = new QCheckBox(QString::fromLocal8Bit("RS422 接口"), rfmPage);
+    m_chkRouteLvds = new QCheckBox(QString::fromLocal8Bit("LVDS 接口"), grpRoute);
+    m_chkRouteCmlk = new QCheckBox(QString::fromLocal8Bit("CameraLink"), grpRoute);
+    m_chkRoute2711 = new QCheckBox(QString::fromLocal8Bit("2711 接口"), grpRoute);
+    m_chkRouteRS422 = new QCheckBox(QString::fromLocal8Bit("RS422 接口"), grpRoute);
 
-    // 2. 从配置文件恢复上次的勾选状态
+    // 2. 实例化对应的相机 ID 数字调节框 (假设相机 ID 范围为 1~16)
+    m_spinLvdsCamId = new QSpinBox(grpRoute);  m_spinLvdsCamId->setRange(1, 16); m_spinLvdsCamId->setPrefix(QString::fromLocal8Bit("绑定相机: "));
+    m_spinCmlkCamId = new QSpinBox(grpRoute);  m_spinCmlkCamId->setRange(1, 16); m_spinCmlkCamId->setPrefix(QString::fromLocal8Bit("绑定相机: "));
+    m_spin2711CamId = new QSpinBox(grpRoute);  m_spin2711CamId->setRange(1, 16); m_spin2711CamId->setPrefix(QString::fromLocal8Bit("绑定相机: "));
+    m_spinRS422CamId = new QSpinBox(grpRoute); m_spinRS422CamId->setRange(1, 16); m_spinRS422CamId->setPrefix(QString::fromLocal8Bit("绑定相机: "));
+
+    // 3. 从配置文件恢复勾选状态和绑定的相机 ID
     m_chkRouteLvds->setChecked(settings.value("RouteLvds", true).toBool());
+    m_spinLvdsCamId->setValue(settings.value("LvdsCamId", 1).toInt()); // 默认绑相机1
+
     m_chkRouteCmlk->setChecked(settings.value("RouteCmlk", false).toBool());
+    m_spinCmlkCamId->setValue(settings.value("CmlkCamId", 2).toInt()); // 默认绑相机2
+
     m_chkRoute2711->setChecked(settings.value("Route2711", false).toBool());
+    m_spin2711CamId->setValue(settings.value("2711CamId", 3).toInt()); // 默认绑相机3
+
     m_chkRouteRS422->setChecked(settings.value("RouteRS422", false).toBool());
+    m_spinRS422CamId->setValue(settings.value("RS422CamId", 4).toInt()); // 默认绑相机4
 
-    // 3. 将它们整齐地排列在同一行
-    QHBoxLayout* routeLayout = new QHBoxLayout();
-    routeLayout->addWidget(new QLabel(QString::fromLocal8Bit("数据转发路由:")));
-    routeLayout->addWidget(m_chkRouteLvds);
-    routeLayout->addWidget(m_chkRouteCmlk);
-    routeLayout->addWidget(m_chkRoute2711);
-    routeLayout->addWidget(m_chkRouteRS422);
-    routeLayout->addStretch();
+    // 4. 将控件整齐地放入网格中
+    routeLayout->addWidget(m_chkRouteLvds, 0, 0);
+    routeLayout->addWidget(m_spinLvdsCamId, 0, 1);
+    routeLayout->addWidget(m_chkRouteCmlk, 0, 2);
+    routeLayout->addWidget(m_spinCmlkCamId, 0, 3);
+    routeLayout->addWidget(m_chkRoute2711, 1, 0);
+    routeLayout->addWidget(m_spin2711CamId, 1, 1);
+    routeLayout->addWidget(m_chkRouteRS422, 1, 2);
+    routeLayout->addWidget(m_spinRS422CamId, 1, 3);
 
-    rfmLayout->addLayout(routeLayout);
+    rfmLayout->addWidget(grpRoute);
 
     QGroupBox* grpSource = new QGroupBox(QString::fromLocal8Bit("动力学数据源配置"), rfmPage);
     QVBoxLayout* srcLayout = new QVBoxLayout(grpSource);
@@ -363,7 +451,27 @@ void CommunicationSoftware::initUI()
     // -> 2.1 图像可视化区
     QGroupBox* grpImage = new QGroupBox(QString::fromLocal8Bit("图像可视化展示"), rightSplitter);
     QVBoxLayout* imgLayout = new QVBoxLayout(grpImage);
+    // ==========================================
+    // [新增] 相机监视切换控制栏
+    // ==========================================
+    QHBoxLayout* camSelectLayout = new QHBoxLayout();
+    camSelectLayout->addWidget(new QLabel(QString::fromLocal8Bit("当前监视相机:")));
 
+    m_cmbCameraSelect = new QComboBox(grpImage);
+    // 假设您最多支持 4 个相机并发，您可以根据实际情况增减
+    m_cmbCameraSelect->addItems({
+        QString::fromLocal8Bit("相机 1"),
+        QString::fromLocal8Bit("相机 2"),
+        QString::fromLocal8Bit("相机 3"),
+        QString::fromLocal8Bit("相机 4")
+        });
+    // 默认选中第一个 (索引为 0，即相机 1)
+    m_cmbCameraSelect->setCurrentIndex(0);
+
+    camSelectLayout->addWidget(m_cmbCameraSelect);
+    camSelectLayout->addStretch(); // 把控件推到左边
+
+    imgLayout->addLayout(camSelectLayout);
     // 实例化视图和场景
     m_imageView = new QGraphicsView(grpImage);
     m_imageScene = new QGraphicsScene(this);
@@ -460,18 +568,7 @@ void CommunicationSoftware::initUI()
         emit sigReadSelfTestData(leSavePath->text());
         m_logBrowser->append(QString::fromLocal8Bit("[%1] 请求读取自检接收数据...").arg(QTime::currentTime().toString("HH:mm:ss")));
         });
-    connect(btnSelectCmlkImage, &QPushButton::clicked, this, [=]() {
-        QString filePath = QFileDialog::getOpenFileName(this, QString::fromLocal8Bit("选择CameraLink测试图像"), "", "(*.png *.bmp)");
-        if (!filePath.isEmpty()) m_leCmlkImagePath->setText(filePath);
-        });
-    connect(btnSelectCmlkSave, &QPushButton::clicked, this, [=]() {
-        QString filePath = QFileDialog::getSaveFileName(this, QString::fromLocal8Bit("选择数据包保存位置"), m_leCmlkSavePath->text(), "(*.bin)");
-        if (!filePath.isEmpty()) m_leCmlkSavePath->setText(filePath);
-        });
-    connect(btnPackAndSave, &QPushButton::clicked, this, [=]() {
-        emit sigPackAndSaveCmlk(m_leCmlkImagePath->text(), m_leCmlkSavePath->text());
-        m_logBrowser->append(QString::fromLocal8Bit("[%1] 正在启动 CameraLink 离线组包任务...").arg(QTime::currentTime().toString("HH:mm:ss")));
-        });
+    
 }
 
 void CommunicationSoftware::onWorkerLogMessage(const QString& msg)
@@ -495,11 +592,18 @@ void CommunicationSoftware::closeEvent(QCloseEvent* event)
     settings.setValue("RxOffset", m_leRfmRxOffset->text());
     settings.setValue("J2000Path", m_leJ2000Path->text());
     settings.setValue("TimerInterval", m_spinIntervalMs->value());
+    // 【新增这行】：保存 CameraLink 的资源名
+    settings.setValue("CmlkResource", m_leCmlkResource->text());
     // 保存所有路由的复选框状态
     settings.setValue("RouteLvds", m_chkRouteLvds->isChecked());
     settings.setValue("RouteCmlk", m_chkRouteCmlk->isChecked());
     settings.setValue("Route2711", m_chkRoute2711->isChecked());
     settings.setValue("RouteRS422", m_chkRouteRS422->isChecked());
+    // 【新增】：保存硬件接口与相机的动态绑定关系
+    settings.setValue("LvdsCamId", m_spinLvdsCamId->value());
+    settings.setValue("CmlkCamId", m_spinCmlkCamId->value());
+    settings.setValue("2711CamId", m_spin2711CamId->value());
+    settings.setValue("RS422CamId", m_spinRS422CamId->value());
 
     cleanupThreads();
     event->accept();
@@ -587,19 +691,32 @@ void CommunicationSoftware::cleanupThreads()
 
 void CommunicationSoftware::handleStartDynamicsClicked()
 {
-    if (m_dynamicsTimer->isActive()) {
+    // ==========================================
+    // 1. 通用的停止逻辑：如果是运行状态，则全部关闭
+    // ==========================================
+    // 【修改】：把 UDP 绑定的判断也加进去
+    if (m_dynamicsTimer->isActive() || m_udpSocket->state() == QAbstractSocket::BoundState) {
         m_dynamicsTimer->stop();
         if (m_dynamicsFile.is_open()) m_dynamicsFile.close();
+
+        // 停止 UDP 监听并断开槽函数，防止收到残余网络包
+        m_udpSocket->abort();
+        m_udpSocket->disconnect();
+
         m_btnStartDynamics->setText(QString::fromLocal8Bit("启动闭环数据流"));
-        m_logBrowser->append(QString::fromLocal8Bit("已手动停止动力学数据发送。"));
-        // 【新增】：停止开环时的独立监听
+        m_logBrowser->append(QString::fromLocal8Bit("已手动停止动力学数据发送/UDP监听。"));
+
         emit sigStopRxListen();
         return;
     }
 
+    m_currentLineNumber = 0; // 重置帧号
+
+    // ==========================================
+    // 2. 启动本地离线回放
+    // ==========================================
     if (m_radioLocalFile->isChecked()) {
         std::string filePath = m_leJ2000Path->text().toLocal8Bit().constData();
-        // 【关键修复 2】：在试图 open 之前，不管三七二十一，先确认彻底关掉旧句柄
         if (m_dynamicsFile.is_open()) {
             m_dynamicsFile.close();
         }
@@ -610,24 +727,43 @@ void CommunicationSoftware::handleStartDynamicsClicked()
             onWorkerError(QString::fromLocal8Bit("无法打开动力学数据文件：") + m_leJ2000Path->text());
             return;
         }
-        m_currentLineNumber = 0;
+
         int interval = m_spinIntervalMs->value();
         m_dynamicsTimer->start(interval);
         m_btnStartDynamics->setText(QString::fromLocal8Bit("停止闭环数据流"));
         m_logBrowser->append(QString::fromLocal8Bit("开始读取本地文件，发送步长: %1 ms").arg(interval));
-        // ==========================================
-        // 【新增】：如果是非闭环（开环）模式，立刻唤醒独立的 RX 线程去截获图像
-        // ==========================================
+
         if (!m_chkWaitAck->isChecked()) {
             bool ok;
             quint32 rxOffset = m_leRfmRxOffset->text().toUInt(&ok, 16);
             emit sigStartRxListen(rxOffset);
         }
-
     }
+    // ==========================================
+    // 3. 启动 UDP 实时转发
+    // ==========================================
     else {
-        m_btnStartDynamics->setText(QString::fromLocal8Bit("停止 UDP 转发"));
-        m_logBrowser->append(QString::fromLocal8Bit("已启动 UDP 监听端口: ") + m_leUdpLocalPort->text() + QString::fromLocal8Bit("，准备向光反直接转发。"));
+        quint16 port = m_leUdpLocalPort->text().toUShort();
+
+        // 绑定指定端口 (AnyIPv4 允许接收局域网内任意 IP 发向该端口的数据)
+        if (m_udpSocket->bind(QHostAddress::AnyIPv4, port, QUdpSocket::ShareAddress)) {
+
+            // 绑定数据就绪信号
+            connect(m_udpSocket, &QUdpSocket::readyRead, this, &CommunicationSoftware::onUdpDataReceived);
+
+            m_btnStartDynamics->setText(QString::fromLocal8Bit("停止 UDP 转发"));
+            m_logBrowser->append(QString::fromLocal8Bit("已启动 UDP 监听，端口: %1，准备向光纤直通转发。").arg(port));
+
+            // 如果是非闭环模式，立即唤醒独立的 RX 线程截获图像
+            if (!m_chkWaitAck->isChecked()) {
+                bool ok;
+                quint32 rxOffset = m_leRfmRxOffset->text().toUInt(&ok, 16);
+                emit sigStartRxListen(rxOffset);
+            }
+        }
+        else {
+            onWorkerError(QString::fromLocal8Bit("UDP 端口绑定失败，可能被其他程序占用！"));
+        }
     }
 }
 
@@ -721,115 +857,101 @@ void CommunicationSoftware::onSimulationStepFinished()
     m_isWaitingForAck = false;
 }
 
-void CommunicationSoftware::routeImageToVideo(const QByteArray& imageData, quint32 width, quint32 height, quint8 bitDepth)
+void CommunicationSoftware::routeImageToVideo(quint32 camId, const QByteArray& imageData, quint32 width, quint32 height, quint8 bitDepth)
 {
+
     // 1. 缓存并刷新 Rx 矩阵表
     m_latestRxData = imageData;
     updateMatrixTable(m_rxImageTable, m_latestRxData);
 
     // ==========================================
-    // 2. 图像可视化实时渲染 (纯 Qt 高效实现)
+    // [新增] 动态获取用户当前选中的相机 ID
+    // currentIndex() 从 0 开始，所以 + 1 对应 camId
     // ==========================================
-    m_displayFrameCounter++;
+    quint32 selectedCamId = static_cast<quint32>(m_cmbCameraSelect->currentIndex() + 1);
 
-    // 降频刷新保护：每 10 帧更新一次界面（100Hz 底层 -> 10Hz 界面渲染）
-    //if (m_displayFrameCounter % 10 == 0)
-   {
-        // [A] 动态获取当前主界面的真实窗口大小
-        int target_w = m_imageView->viewport()->width();
-        int target_h = m_imageView->viewport()->height();
+    // 只有当传来的图像属于用户正在看的相机时，才更新界面！
+    // 这样彻底避免了多相机同时打图导致的界面闪退和数据表疯狂跳动
+    if (camId == selectedCamId) {
 
-        // 给个保底值，防止程序刚启动时 UI 窗口还没撑开导致报错
-        if (target_w < 100) target_w = 400;
-        if (target_h < 100) target_h = 300;
+        // 1. 缓存并刷新 Rx 矩阵表
+        m_latestRxData = imageData;
+        updateMatrixTable(m_rxImageTable, m_latestRxData);
 
-        int bytesPerPixel = (bitDepth == 16) ? 2 : 1;
-        int bytesPerLine = width * bytesPerPixel;
+        // 2. 图像可视化实时渲染
+        m_displayFrameCounter++;
 
-        // 校验数据长度，防止指针越界引发内存崩溃
-        if (imageData.size() >= height * bytesPerLine) {
+        // 降频刷新保护：每 2 帧更新一次界面（保证流畅度又不卡死 UI）
+        /*if (m_displayFrameCounter % 1 == 0) {*/
+        if (1) {
+            int target_w = m_imageView->viewport()->width();
+            int target_h = m_imageView->viewport()->height();
 
-            // [B] 零拷贝构造原始大图 (彻底摒弃 cv::Mat)
-            QImage::Format format = (bitDepth == 16) ? QImage::Format_Grayscale16 : QImage::Format_Grayscale8;
-            QImage rawImg(reinterpret_cast<const uchar*>(imageData.constData()), width, height, bytesPerLine, format);
+            if (target_w < 100) target_w = 400;
+            if (target_h < 100) target_h = 300;
 
-            // [C] 动态平滑缩放 (等效于 OpenCV 的 cv::INTER_AREA)
-            QImage displayImg;
-            if (width > target_w || height > target_h) {
-                // Qt::KeepAspectRatio 自动处理长宽比，防止变形
-                displayImg = rawImg.scaled(target_w, target_h, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-            }
-            else {
-                displayImg = rawImg; // 窗口比图大时，不消耗 CPU 去放大，丢给视图组件拉伸即可
-            }
+            int bytesPerPixel = (bitDepth == 16) ? 2 : 1;
+            int bytesPerLine = width * bytesPerPixel;
 
-            // [D] 亮度映射：实现 img.convertTo(img_display, CV_8U, 255.0 / max_DN) 的效果
-            // 优势：只对缩放后的这几十万个像素进行乘法计算，速度极快！
-            if (bitDepth == 16) {
-                double max_DN = 4095; // 【注意】：请根据您相机的真实位深(如 14-bit)修改此值！
-                double alpha = 255.0 / max_DN;
+            if (imageData.size() >= height * bytesPerLine) {
+                QImage::Format format = (bitDepth == 16) ? QImage::Format_Grayscale16 : QImage::Format_Grayscale8;
+                QImage rawImg(reinterpret_cast<const uchar*>(imageData.constData()), width, height, bytesPerLine, format);
 
-                // 创建一张 8-bit 的空白小图
-                QImage img8(displayImg.size(), QImage::Format_Grayscale8);
-
-                // 遍历小图的像素进行亮度线性映射
-                for (int y = 0; y < displayImg.height(); ++y) {
-                    const quint16* srcLine = reinterpret_cast<const quint16*>(displayImg.constScanLine(y));
-                    uchar* dstLine = img8.scanLine(y);
-                    for (int x = 0; x < displayImg.width(); ++x) {
-                        int val = srcLine[x] * alpha;
-                        dstLine[x] = (val > 255) ? 255 : val;
-                    }
+                QImage displayImg;
+                if (width > target_w || height > target_h) {
+                    displayImg = rawImg.scaled(target_w, target_h, Qt::KeepAspectRatio, Qt::FastTransformation);
                 }
-                displayImg = img8; // 替换为映射好的 8-bit 图
-            }
+                else {
+                    displayImg = rawImg;
+                }
 
-            // [E] 高效送入 UI 视图进行显示
-            m_pixmapItem->setPixmap(QPixmap::fromImage(displayImg));
-            m_imageView->setSceneRect(m_pixmapItem->boundingRect());
-            m_imageView->fitInView(m_pixmapItem, Qt::KeepAspectRatio);
+                if (bitDepth == 16) {
+                    double max_DN = 4095; // 根据您的实际位深修改
+                    double alpha = 255.0 / max_DN;
+
+                    QImage img8(displayImg.size(), QImage::Format_Grayscale8);
+
+                    for (int y = 0; y < displayImg.height(); ++y) {
+                        const quint16* srcLine = reinterpret_cast<const quint16*>(displayImg.constScanLine(y));
+                        uchar* dstLine = img8.scanLine(y);
+                        for (int x = 0; x < displayImg.width(); ++x) {
+                            int val = srcLine[x] * alpha;
+                            dstLine[x] = (val > 255) ? 255 : val;
+                        }
+                    }
+                    displayImg = img8;
+                }
+
+                m_pixmapItem->setPixmap(QPixmap::fromImage(displayImg));
+                m_imageView->setSceneRect(m_pixmapItem->boundingRect());
+                m_imageView->fitInView(m_pixmapItem, Qt::KeepAspectRatio);
+            }
         }
     }
 
     // ==========================================
-    // 3. 下面的路由分发逻辑保持不变
+    // 3. 后台物理硬件转发路由 (完全不受界面切换影响)
     // ==========================================
-    bool isRouted = false;
 
-    // 1. 判断是否需要分发给 LVDS
-    if (m_chkRouteLvds->isChecked()) {
-        // 真正触发内存跨线程发送！
+    // 判断该图是否归属 LVDS 接口
+    if (m_chkRouteLvds->isChecked() && camId == static_cast<quint32>(m_spinLvdsCamId->value())) {
         emit sigSendToLvdsMem(imageData, width, height, bitDepth);
-        // 【关键】：千万不要在这里打印日志，否则高频发图会卡死界面
-        // m_logBrowser->append(QString::fromLocal8Bit("已将回传图像路由至 LVDS 发送缓冲区。"));
-        isRouted = true;
     }
 
-    // 2. 判断是否需要分发给 CameraLink
-    if (m_chkRouteCmlk->isChecked()) {
+    // 判断该图是否归属 CameraLink 接口
+    if (m_chkRouteCmlk->isChecked() && camId == static_cast<quint32>(m_spinCmlkCamId->value())) {
         emit sigSendToCmlkMem(imageData, width, height, bitDepth);
-        isRouted = true;
     }
 
-    // 3. 判断 2711 接口路由
-    if (m_chkRoute2711->isChecked()) {
+    // 判断该图是否归属 2711 接口
+    if (m_chkRoute2711->isChecked() && camId == static_cast<quint32>(m_spin2711CamId->value())) {
         // emit sigSendTo2711Mem(imageData, width, height, bitDepth);
-        isRouted = true;
     }
 
-    // 4. 判断 RS422 接口路由
-    if (m_chkRouteRS422->isChecked()) {
+    // 判断该图是否归属 RS422 接口
+    if (m_chkRouteRS422->isChecked() && camId == static_cast<quint32>(m_spinRS422CamId->value())) {
         // emit sigSendToRS422Mem(imageData, width, height, bitDepth);
-        isRouted = true;
     }
-
-    // 如果仅仅为了测试是否正常工作，可以将未路由时的提示加个降频限制，或者干脆也删掉：
-    /*
-    if (!isRouted) {
-        // 只有当完全没有勾选任何路由时才提示（建议也注释掉，避免刷屏）
-        // m_logBrowser->append(QString::fromLocal8Bit("数据仅接收不转发 (测试模式)。"));
-    }
-    */
 }
 
 // 1. 初始化空矩阵 (隐藏所有表头，纯净显示数据)
@@ -921,4 +1043,71 @@ void CommunicationSoftware::onFormatToggled()
 {
     updateMatrixTable(m_dataTable, m_latestTxData);
     updateMatrixTable(m_rxImageTable, m_latestRxData);
+}
+void CommunicationSoftware::onUdpDataReceived()
+{
+    bool strictSync = m_chkWaitAck->isChecked();
+
+    // 循环读取所有积压的网络数据报
+    while (m_udpSocket->hasPendingDatagrams()) {
+
+        QByteArray datagram;
+        datagram.resize(m_udpSocket->pendingDatagramSize());
+        m_udpSocket->readDatagram(datagram.data(), datagram.size());
+
+        // 假设外部仿真机发送的是 133 个 double 的纯二进制数组
+        const int DATA_SIZE = 133;
+        const int EXPECTED_BYTES = DATA_SIZE * sizeof(double); // 1064 字节
+
+        // 拦截器 1：校验 UDP 数据包长度
+        if (datagram.size() != EXPECTED_BYTES) {
+            onWorkerError(QString::fromLocal8Bit("UDP 报文长度错误: 收到 %1 字节，预期应为 %2 字节。")
+                .arg(datagram.size()).arg(EXPECTED_BYTES));
+            continue;
+        }
+
+        // 拦截器 2：严格闭环模式下的丢帧策略
+        if (strictSync && m_isWaitingForAck) {
+            // 如果上位机还在死等上一帧的图像，而网络上又飞来了新的动力学，
+            // 工业级做法是：为了保证绝对的实时性，必须丢弃旧包，防止雪崩式延迟积压
+            continue;
+        }
+
+        if (strictSync) {
+            m_isWaitingForAck = true;
+        }
+
+        m_currentLineNumber++; // 递增充当 FrameID
+
+        // 1. 构造硬核动力学协议头
+        RfmDynamicsHeader header;
+        header.magicNum = 0xD0D0D0D0;
+        header.frameId = m_currentLineNumber;
+        header.dataCount = DATA_SIZE;
+        header.dataBytes = EXPECTED_BYTES;
+
+        // 2. 内存拼包：协议头 + 1064 字节裸负荷
+        QByteArray packetData;
+        packetData.append(reinterpret_cast<const char*>(&header), sizeof(RfmDynamicsHeader));
+        packetData.append(datagram);
+
+        // 获取 UI 面板参数
+        bool ok;
+        quint32 txOffset = m_leRfmTxOffset->text().toUInt(&ok, 16);
+        RFM2G_NODE targetNode = m_leRfmTargetNode->text().toUShort(&ok, 0);
+        quint32 rxOffset = m_leRfmRxOffset->text().toUInt(&ok, 16);
+        quint32 timeout = 5000;
+
+        // 3. 兵分两路：闭环打图 vs 开环盲发
+        if (strictSync) {
+            emit sigSendAndWaitRfm(packetData, txOffset, targetNode, rxOffset, timeout);
+        }
+        else {
+            emit sigSendRfmData(packetData, txOffset, targetNode);
+        }
+
+        // 4. 刷新监控矩阵 (把包含表头的整包送去解码展示)
+        m_latestTxData = packetData;
+        updateMatrixTable(m_dataTable, m_latestTxData);
+    }
 }

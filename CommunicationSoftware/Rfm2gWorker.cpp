@@ -66,64 +66,6 @@ void Rfm2gWorker::sendDynamicsData(const QByteArray& data, quint32 offset, RFM2G
     }
 }
 
-void Rfm2gWorker::waitForReturnData(quint32 offset, quint32 length, quint32 timeoutMs)
-{
-    if (!m_isInitialized) return;
-
-    RFM2GEVENTINFO eventInfo;
-    eventInfo.Event = RFM2GEVENT_INTR2;
-    eventInfo.Timeout = timeoutMs;
-
-    emit logMessage(QString::fromLocal8Bit("等待下位机仿真节点回传图像..."));
-
-    // 【修改点 1】：先执行等待，并把返回值用 waitRes 存起来
-    RFM2G_STATUS waitRes = RFM2gWaitForEvent(m_handle, &eventInfo);
-
-    if (waitRes == RFM2G_SUCCESS) {
-
-        RfmImageHeader header;
-        // 【修改点 2】：这里的 res 专门用于接收 Read 操作的结果
-        RFM2G_STATUS res = RFM2gRead(m_handle, offset, (void*)&header, sizeof(RfmImageHeader));
-
-        if (res == RFM2G_SUCCESS && header.magicNum == 0xABCD1234) {
-            emit logMessage(QString::fromLocal8Bit("收到合法图像包，尺寸: %1x%2，位深: %3，准备提取...")
-                .arg(header.imgWidth).arg(header.imgHeight).arg(header.imgBitDepth));
-
-            RFM2G_UINT32 addedOffset = offset + sizeof(RfmImageHeader);
-            RFM2G_UINT32 imageOffset = addedOffset + header.addedSize;
-
-            if (header.addedSize > 0) {
-                QByteArray addedData;
-                addedData.resize(header.addedSize);
-                RFM2gRead(m_handle, addedOffset, addedData.data(), header.addedSize);
-            }
-
-            QByteArray imageData;
-            imageData.resize(header.imgDataSize);
-
-            res = RFM2gRead(m_handle, imageOffset, imageData.data(), header.imgDataSize);
-
-            if (res == RFM2G_SUCCESS) {
-                emit parsedImageReceived(imageData, header.imgWidth, header.imgHeight, header.imgBitDepth);
-                emit operationCompleted(QString::fromLocal8Bit("图像数据提取完毕并已跨线程转发。"));
-            }
-            else {
-                emit errorOccurred(QString::fromLocal8Bit("读取图像裸数据失败: %1").arg(RFM2gErrorMsg(res)));
-            }
-        }
-        else {
-            emit errorOccurred(QString::fromLocal8Bit("包头校验码错误或读取失败！"));
-        }
-    }
-    // 【修改点 3】：用 waitRes 判断是否等待超时
-    else if (waitRes == RFM2G_TIMED_OUT) {
-        emit errorOccurred(QString::fromLocal8Bit("等待下位机回传超时！"));
-    }
-    else {
-        // 顺便把具体的错误码打出来，方便排错
-        emit errorOccurred(QString::fromLocal8Bit("等待中断发生错误: %1").arg(RFM2gErrorMsg(waitRes)));
-    }
-}
 void Rfm2gWorker::sendAndWaitDynamics(const QByteArray& data, quint32 txOffset, RFM2G_NODE targetNode, quint32 rxOffset, quint32 timeoutMs)
 {
     if (!m_isInitialized) return;
@@ -156,24 +98,52 @@ void Rfm2gWorker::sendAndWaitDynamics(const QByteArray& data, quint32 txOffset, 
     RFM2G_STATUS waitRes = RFM2gWaitForEvent(m_handle, &eventInfo);
 
     if (waitRes == RFM2G_SUCCESS) {
-        RfmImageHeader header;
-        res = RFM2gRead(m_handle, rxOffset, (void*)&header, sizeof(RfmImageHeader));
 
-        if (res == RFM2G_SUCCESS && header.magicNum == 0xABCD1234) {
-            RFM2G_UINT32 imageOffset = rxOffset + sizeof(RfmImageHeader) + header.addedSize;
-            QByteArray imageData;
-            imageData.resize(header.imgDataSize);
+        // 记录当前正在试探的读取偏移量 (初始为起点)
+        quint32 currentReadOffset = rxOffset;
+        int parsedCount = 0; // 统计本次中断成功解析了几张图
 
-            if (RFM2gRead(m_handle, imageOffset, imageData.data(), header.imgDataSize) == RFM2G_SUCCESS) {
+        // 【新增】：开启链式盲读循环
+        while (true) {
+            RfmImageHeader header;
+            res = RFM2gRead(m_handle, currentReadOffset, (void*)&header, sizeof(RfmImageHeader));
+
+            // 如果读到的内存是合法的，说明这里藏着一张图
+            if (res == RFM2G_SUCCESS && header.magicNum == 0xABCD1234) {
+
+                RFM2G_UINT32 imageOffset = currentReadOffset + sizeof(RfmImageHeader) + header.addedSize;
+                QByteArray imageData;
+                imageData.resize(header.imgDataSize);
+
+                if (RFM2gRead(m_handle, imageOffset, imageData.data(), header.imgDataSize) == RFM2G_SUCCESS) {
+                    // 提取成功！带上 camId 跨线程抛出
+                    emit parsedImageReceived(header.camId, imageData, header.imgWidth, header.imgHeight, header.imgBitDepth);
+                    parsedCount++;
+                }
+
                 // ==========================================
-                // [新增] 停止计时，计算并打印耗时
+                // 核心防御：阅后即焚！
+                // 读完立刻把这块内存的魔法数抹除，防止在未来的循环中读到残影
                 // ==========================================
-                // 使用 nsecsElapsed() 获取纳秒，除以 1000000.0 转为带小数点的毫秒，精度极高
-                double elapsedMs = perfTimer.nsecsElapsed() / 1000000.0;
-                emit logMessage(QString::fromLocal8Bit("[性能监控] 闭环单帧总耗时: %1 ms (含动力学写入、仿真渲染及巨幅图像读取)").arg(elapsedMs, 0, 'f', 3));
-                // 成功！将纯图像剥离并向外发射
-                emit parsedImageReceived(imageData, header.imgWidth, header.imgHeight, header.imgBitDepth);
+                quint32 dummy = 0;
+                RFM2gWrite(m_handle, currentReadOffset, (void*)&dummy, sizeof(quint32));
+
+                // 推进指针，计算下一张图可能存在的起始地址，继续循环试探
+                currentReadOffset = imageOffset + header.imgDataSize;
+
             }
+            else {
+                // 读不到合法的魔法数，说明这轮总线上的所有相机图像都已提取完毕
+                break;
+            }
+        }
+
+        if (parsedCount > 0) {
+            // 可选：在日志中打印本次中断总共收到了几个传感器的数据
+            // emit logMessage(QString::fromLocal8Bit("成功解析并分发了 %1 个相机的图像流。").arg(parsedCount));
+        }
+        else {
+            emit errorOccurred(QString::fromLocal8Bit("收到中断，但在内存中未找到任何合法的图像包！"));
         }
     }
     else if (waitRes == RFM2G_TIMED_OUT) {
@@ -201,23 +171,53 @@ void Rfm2gWorker::startContinuousListen(quint32 rxOffset)
 
         RFM2G_STATUS waitRes = RFM2gWaitForEvent(m_handle, &eventInfo);
 
+        // 如果成功等到了下位机发来的中断
         if (waitRes == RFM2G_SUCCESS) {
-            RfmImageHeader header;
-            if (RFM2gRead(m_handle, rxOffset, (void*)&header, sizeof(RfmImageHeader)) == RFM2G_SUCCESS) {
-                if (header.magicNum == 0xABCD1234) {
-                    RFM2G_UINT32 imageOffset = rxOffset + sizeof(RfmImageHeader) + header.addedSize;
+
+            quint32 currentReadOffset = rxOffset; // 每次中断都从基地址开始试探
+            int parsedCount = 0;
+
+            // ==========================================
+            // 开启内部循环：进行多相机连续内存的链式盲读
+            // ==========================================
+            while (true) {
+                RfmImageHeader header;
+                RFM2G_STATUS res = RFM2gRead(m_handle, currentReadOffset, (void*)&header, sizeof(RfmImageHeader));
+
+                // 试探当前地址：如果魔法数对得上，说明是一张新图
+                if (res == RFM2G_SUCCESS && header.magicNum == 0xABCD1234) {
+
+                    RFM2G_UINT32 imageOffset = currentReadOffset + sizeof(RfmImageHeader) + header.addedSize;
                     QByteArray imageData;
                     imageData.resize(header.imgDataSize);
 
                     if (RFM2gRead(m_handle, imageOffset, imageData.data(), header.imgDataSize) == RFM2G_SUCCESS) {
-                        // 成功截获图像，抛给路由中心！
-                        emit parsedImageReceived(imageData, header.imgWidth, header.imgHeight, header.imgBitDepth);
+                        // 【关键】：提取成功，带上 camId 抛给路由中心进行精准分发！
+                        emit parsedImageReceived(header.camId, imageData, header.imgWidth, header.imgHeight, header.imgBitDepth);
+                        parsedCount++;
                     }
+
+                    //阅后即焚：立刻抹除当前这个包头的魔法数，防止之后重复读取
+                    quint32 zeroMagic = 0;
+                    RFM2gWrite(m_handle, currentReadOffset, (void*)&zeroMagic, sizeof(quint32));
+
+                    // 推进指针：计算出紧挨着的下一张图的起始地址，继续 while 试探
+                    currentReadOffset = imageOffset + header.imgDataSize;
+
+                }
+                else {
+                    // 试探失败（读不出 0xABCD1234），说明这轮总线上拼装的所有图像都已提取完毕
+                    break;
                 }
             }
+            // 可选调试日志：您可以在日志区监控每一帧到底收到了几个相机的图
+            if (parsedCount > 0) {
+                emit logMessage(QString::fromLocal8Bit("后台连续监听: 成功解析并转发 %1 个相机的并发图像。").arg(parsedCount));
+            }
+            
         }
 
-        // 极为关键的一句：允许该子线程处理外部发来的 stopContinuousListen 信号
+        // 极为关键的一句：允许该子线程处理外部发来的 stopContinuousListen 信号，防止死循环卡死
         QCoreApplication::processEvents();
     }
 

@@ -22,8 +22,8 @@ signals:
     void operationCompleted(const QString& result);
     // 将接收到的数据发给主UI或其他Worker（如后续要转给LVDS发送）
     void returnDataReceived(const QByteArray& data);
-    // 新增：解析完毕后的纯图像数据跨线程抛出信号
-    void parsedImageReceived(const QByteArray& imageData, quint32 width, quint32 height, quint8 bitDepth);
+    // 【修改】：在参数列表最前面增加 quint32 camId
+    void parsedImageReceived(quint32 camId, const QByteArray& imageData, quint32 width, quint32 height, quint8 bitDepth);
     // 通知主 UI，当前帧已彻底闭环完成
     void simulationStepFinished();
 
@@ -34,8 +34,6 @@ public slots:
     // 发送动力学数据，并触发特定节点的中断
     void sendDynamicsData(const QByteArray& data, quint32 offset, RFM2G_NODE targetNode);
 
-    // 监听下位机返回的中断，并读取指定长度的数据
-    void waitForReturnData(quint32 offset, quint32 length, quint32 timeoutMs);
     // 新增：组合槽函数，发送动力学后立即阻塞等待回传
     void sendAndWaitDynamics(const QByteArray& data, quint32 txOffset, RFM2G_NODE targetNode, quint32 rxOffset, quint32 timeoutMs);
     // ==========================================

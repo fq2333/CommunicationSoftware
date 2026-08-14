@@ -3,15 +3,16 @@
 
 #include <cstdint>
 
-#pragma pack(push, 1) // 强制 1 字节对齐，防止跨平台/跨编译器结构体填充导致的错位
+#pragma pack(push, 1) // 强制 1 字节对齐
 struct RfmImageHeader {
-    uint32_t magicNum;    // 校验码 (0xABCD1234)
-    uint8_t  imgBitDepth; // 图像位深 (8 或 16)
-    uint32_t imgWidth;    // 图像宽 
-    uint32_t imgHeight;   // 图像高 
-    uint32_t imgDataSize; // 图像裸数据总字节数
-    uint8_t  addedType;   // 附加数据类型
-    uint32_t addedSize;   // 附加数据长度
+    uint32_t magicNum;      // 0xABCD1234
+    uint32_t camId;         // 【新增】：专属的相机 ID 字段
+    uint8_t  imgBitDepth;
+    uint32_t imgWidth;
+    uint32_t imgHeight;
+    uint32_t imgDataSize;
+    uint8_t  addedType;
+    uint32_t addedSize;
 };
 struct RfmDynamicsHeader {
     uint32_t magicNum;  // 魔法数 (0xD0D0D0D0)

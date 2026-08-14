@@ -6,6 +6,12 @@
 #include <QImage>
 #include <QVector>
 
+// ==========================================
+// 引入官方 DLL 头文件
+// ==========================================
+#include "visa.h"
+#include "libStandard_pxie.h"
+
 class CameraLinkWorker : public QObject
 {
     Q_OBJECT
@@ -14,26 +20,26 @@ public:
     ~CameraLinkWorker();
 
 signals:
-    // 与主 UI 交互的标准信号
     void logMessage(const QString& msg);
     void errorOccurred(const QString& errorMsg);
     void operationCompleted(const QString& result);
 
 public slots:
-    // 供主线程调用的槽函数
     void initializeBoard(const QString& resourceName);
     void closeBoard();
+    void resetBoard(); // [新增] 复位槽函数
     void sendLocalImage(const QString& imagePath);
-    // ... 其他接口
+    void sendImageFromMemory(const QByteArray& imageData, quint32 width, quint32 height, quint8 bitDepth);
     void packAndSaveOffline(const QString& imagePath, const QString& savePath);
 
 private:
     bool m_isInitialized;
-    // 预留的底层设备句柄（待 DLL 给出后替换为真实类型，如 HANDLE 或 int）
-    void* m_cmlkHandle;
 
-    // 核心算法：将 16-bit 图像提取为符合 2tap 12bit 的二进制数据包
+    // [修改] 使用真实的 VISA 句柄类型
+    ViSession m_cmlkHandle;
+
     bool buildCameraLinkPacket(const QImage& img16, QByteArray& outBuffer);
+    
 };
 
 #endif // CAMERALINKWORKER_H
